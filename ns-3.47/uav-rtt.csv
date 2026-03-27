@@ -1,0 +1,7 @@
+time_s,seq_no,rtt_ms,context
+5.012734,4,12.000000,/NodeList/0/ApplicationList/0/$ns3::Ping/Rtt
+6.000873,5,0.000000,/NodeList/0/ApplicationList/0/$ns3::Ping/Rtt
+7.000673,6,0.000000,/NodeList/0/ApplicationList/0/$ns3::Ping/Rtt
+8.000853,7,0.000000,/NodeList/0/ApplicationList/0/$ns3::Ping/Rtt
+9.000753,8,0.000000,/NodeList/0/ApplicationList/0/$ns3::Ping/Rtt
+10.000773,9,0.000000,/NodeList/0/ApplicationList/0/$ns3::Ping/Rtt
