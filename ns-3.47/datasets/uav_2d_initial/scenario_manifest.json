@@ -1,0 +1,181 @@
+{
+  "generated_by": "generate_uav_2d_dataset.py (fixed v2)",
+  "fixes": [
+    "hop_count based on link state, not 30 m distance threshold (Fix #1)",
+    "blocked_building fields for 2-hop routes use relay-segment data (Fix #2)",
+    "three scenarios include disconnected links for AI training (Fix #3)",
+    "time resolution 0.5 s, duration 18-60 s \u2192 ~2 000 rows (Fix #4)"
+  ],
+  "scenarios": [
+    {
+      "scenario_id": "corridor_baseline",
+      "description": "All 5 UAVs fly east in loose formation; fixed buildings cause progressive link degradation as drones transit the obstacle corridor.",
+      "duration_s": 60.0,
+      "time_step_s": 0.5,
+      "relay_uav": 2
+    },
+    {
+      "scenario_id": "relay_stretch",
+      "description": "UAV0/1 fly east and UAV3/4 fly west from a common centre; UAV2 stays stationary as relay anchor. The east and west groups lose relay connectivity near t=15 s, producing disconnected states.",
+      "duration_s": 20.0,
+      "time_step_s": 0.5,
+      "relay_uav": 2
+    },
+    {
+      "scenario_id": "cluster_spread",
+      "description": "All UAVs start at the same point and spread outward in different directions. Most pairs disconnect by t\u224812 s; UAV2 drifts slowly east and briefly acts as relay before also losing connectivity.",
+      "duration_s": 18.0,
+      "time_step_s": 0.5,
+      "relay_uav": 2
+    },
+    {
+      "scenario_id": "converge_diverge",
+      "description": "5 UAVs start far apart (disconnected), converge to a common centre at t=10 s (healthy), then diverge again. Provides the recovery pattern disconnected\u2192degraded\u2192healthy\u2192degraded\u2192disconnected that the first 3 scenarios completely lack.",
+      "mobility": "phases",
+      "relay_uav": 2,
+      "duration_s": 20.0,
+      "time_step_s": 0.5,
+      "phases": [
+        {
+          "duration_s": 10.0,
+          "initial_positions": {
+            "0": [
+              95.0,
+              110.0
+            ],
+            "1": [
+              95.0,
+              10.0
+            ],
+            "2": [
+              45.0,
+              60.0
+            ],
+            "3": [
+              145.0,
+              80.0
+            ],
+            "4": [
+              145.0,
+              40.0
+            ]
+          },
+          "velocities": {
+            "0": [
+              0.0,
+              -5.0
+            ],
+            "1": [
+              0.0,
+              5.0
+            ],
+            "2": [
+              5.0,
+              0.0
+            ],
+            "3": [
+              -5.0,
+              -2.0
+            ],
+            "4": [
+              -5.0,
+              2.0
+            ]
+          }
+        },
+        {
+          "duration_s": 10.0,
+          "velocities": {
+            "0": [
+              0.0,
+              5.0
+            ],
+            "1": [
+              0.0,
+              -5.0
+            ],
+            "2": [
+              -5.0,
+              0.0
+            ],
+            "3": [
+              5.0,
+              2.0
+            ],
+            "4": [
+              5.0,
+              -2.0
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "scenario_id": "slow_separation",
+      "description": "Same east/west divergence as relay_stretch but at 3 m/s (half speed). First disconnect occurs at t\u224829 s, giving a much longer degraded window so the model can learn gradual decline patterns.",
+      "mobility": "linear",
+      "relay_uav": 2,
+      "duration_s": 30.0,
+      "time_step_s": 0.5
+    },
+    {
+      "scenario_id": "orbit",
+      "description": "4 UAVs orbit a stationary relay (UAV2) at radius 50 m, angular speed 0.2 rad/s (one orbit \u2248 31 s). Opposite pairs are ~100 m apart \u2192 disconnected; adjacent pairs ~71 m \u2192 degraded; each UAV is 50 m from relay \u2192 degraded. Simulation covers \u22481.3 orbits.",
+      "mobility": "circular",
+      "relay_uav": 2,
+      "duration_s": 40.0,
+      "time_step_s": 0.5,
+      "center": [
+        100.0,
+        60.0
+      ],
+      "orbits": {
+        "0": {
+          "radius": 50.0,
+          "initial_angle_deg": 90.0,
+          "angular_velocity_rad_s": 0.2
+        },
+        "1": {
+          "radius": 50.0,
+          "initial_angle_deg": 270.0,
+          "angular_velocity_rad_s": 0.2
+        },
+        "2": {
+          "radius": 0.0,
+          "initial_angle_deg": 0.0,
+          "angular_velocity_rad_s": 0.0
+        },
+        "3": {
+          "radius": 50.0,
+          "initial_angle_deg": 0.0,
+          "angular_velocity_rad_s": 0.2
+        },
+        "4": {
+          "radius": 50.0,
+          "initial_angle_deg": 180.0,
+          "angular_velocity_rad_s": 0.2
+        }
+      }
+    }
+  ],
+  "thresholds": {
+    "healthy_rssi_dbm_min": -78.0,
+    "degraded_rssi_dbm_min": -85.0,
+    "healthy_plr_pct_max": 5.0,
+    "degraded_plr_pct_max": 20.0,
+    "healthy_rtt_ms_max": 30.0,
+    "degraded_rtt_ms_max": 60.0,
+    "healthy_throughput_mbps_min": 8.0,
+    "degraded_throughput_mbps_min": 3.0,
+    "reconfig_trigger_plr_pct": 15.0,
+    "reconfig_trigger_rssi_dbm": -80.0,
+    "reconfig_trigger_rtt_ms": 40.0,
+    "reconfig_trigger_throughput_mbps": 4.0
+  },
+  "heuristics": [
+    "Prefer relay_uav as the default relay anchor in the 5-UAV baseline.",
+    "If a link crosses a trigger threshold, move the farthest peripheral UAV 5-10 m toward relay.",
+    "If the same relay-adjacent link is triggered for \u22652 consecutive steps, prepare relay reassignment.",
+    "Treat blocked LOS plus PLR/RSSI degradation as a stronger trigger than distance alone."
+  ]
+}

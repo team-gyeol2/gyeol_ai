@@ -1,0 +1,4 @@
+building_id,kind,x_min_m,x_max_m,y_min_m,y_max_m,attenuation_db,note
+B0,fixed_building,88.0,100.0,52.0,58.0,6.0,Mid-map lower corridor obstacle; often affects UAV1-UAV2 LOS.
+B1,fixed_building,118.0,132.0,62.0,68.0,6.0,Upper corridor obstacle; can degrade UAV0/UAV4 links to the relay.
+B2,fixed_building,146.0,160.0,50.0,56.0,6.0,Late-stage lower corridor obstacle; affects relay access near map exit.
