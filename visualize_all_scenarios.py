@@ -23,7 +23,7 @@ from matplotlib.patches import Rectangle
 
 ROOT     = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "ns-3.47" / "datasets" / "uav_2d_initial"
-OUT_DIR  = ROOT / "ns-3.47"
+OUT_DIR  = ROOT / "ns-3.47" / "scenario_gifs"
 
 BUILDINGS = [
     {"id": "B0", "x_min": 88,  "x_max": 100, "y_min": 52, "y_max": 58},

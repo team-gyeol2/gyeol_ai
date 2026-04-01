@@ -24,6 +24,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+import random
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -104,7 +105,7 @@ SCENARIOS: list[dict] = [
             4: (5.0,  0.5),
         },
         "duration_s": 60.0,
-        "time_step_s": 0.5,
+        "time_step_s": 0.25,
         "relay_uav": 2,
     },
     {
@@ -129,7 +130,7 @@ SCENARIOS: list[dict] = [
             4: (-6.0, -0.5),
         },
         "duration_s": 20.0,
-        "time_step_s": 0.5,
+        "time_step_s": 0.25,
         "relay_uav": 2,
     },
     {
@@ -154,7 +155,7 @@ SCENARIOS: list[dict] = [
             4: ( 6.0,  0.0),
         },
         "duration_s": 18.0,
-        "time_step_s": 0.5,
+        "time_step_s": 0.25,
         "relay_uav": 2,
     },
     # ── 추가 시나리오 3개 ───────────────────────────────────────────────────
@@ -169,7 +170,7 @@ SCENARIOS: list[dict] = [
         "mobility": "phases",
         "relay_uav": 2,
         "duration_s": 20.0,
-        "time_step_s": 0.5,
+        "time_step_s": 0.25,
         "phases": [
             {
                 "duration_s": 10.0,
@@ -210,7 +211,7 @@ SCENARIOS: list[dict] = [
         "mobility": "linear",
         "relay_uav": 2,
         "duration_s": 30.0,
-        "time_step_s": 0.5,
+        "time_step_s": 0.25,
         "initial_positions": {
             0: (95.0, 70.0),
             1: (95.0, 50.0),
@@ -237,7 +238,7 @@ SCENARIOS: list[dict] = [
         "mobility": "circular",
         "relay_uav": 2,
         "duration_s": 40.0,
-        "time_step_s": 0.5,
+        "time_step_s": 0.25,
         "center": (100.0, 60.0),
         "orbits": {
             0: {"radius": 50.0, "initial_angle_deg":  90.0, "angular_velocity_rad_s": 0.2},
@@ -247,13 +248,117 @@ SCENARIOS: list[dict] = [
             4: {"radius": 50.0, "initial_angle_deg": 180.0, "angular_velocity_rad_s": 0.2},
         },
     },
+    # ── 랜덤 이동 시나리오 3개 (Random Waypoint) ────────────────────────────
+    {
+        "scenario_id": "random_waypoint_1",
+        "description": (
+            "5 UAVs move independently via Random Waypoint model (seed=42). "
+            "Each UAV picks a random destination within the map area and "
+            "travels at a random speed (2~8 m/s). On arrival it picks a new "
+            "waypoint. Speeds differ per UAV, producing realistic mixed "
+            "link-state transitions."
+        ),
+        "mobility": "random_waypoint",
+        "relay_uav": 2,
+        "duration_s": 40.0,
+        "time_step_s": 0.25,
+        "seed": 42,
+        "x_range": (50.0, 180.0),
+        "y_range": (40.0, 90.0),
+        "speed_range": (2.0, 8.0),
+    },
+    {
+        "scenario_id": "random_waypoint_2",
+        "description": (
+            "Random Waypoint scenario with seed=123. Higher average speed "
+            "setting results in more frequent disconnected events."
+        ),
+        "mobility": "random_waypoint",
+        "relay_uav": 2,
+        "duration_s": 40.0,
+        "time_step_s": 0.25,
+        "seed": 123,
+        "x_range": (50.0, 180.0),
+        "y_range": (40.0, 90.0),
+        "speed_range": (3.0, 9.0),
+    },
+    {
+        "scenario_id": "random_waypoint_3",
+        "description": (
+            "Random Waypoint scenario with seed=999. Lower speed range "
+            "produces longer healthy/degraded periods with gradual transitions."
+        ),
+        "mobility": "random_waypoint",
+        "relay_uav": 2,
+        "duration_s": 40.0,
+        "time_step_s": 0.25,
+        "seed": 999,
+        "x_range": (50.0, 180.0),
+        "y_range": (40.0, 90.0),
+        "speed_range": (1.0, 5.0),
+    },
 ]
 
 
 # ── Geometry helpers ──────────────────────────────────────────────────────────
 
+def _build_rwp_trajectory(scenario: dict) -> None:
+    """Random Waypoint 이동 궤적을 미리 계산해 scenario['_rwp_traj'], ['_rwp_speed']에 저장."""
+    if "_rwp_traj" in scenario:
+        return  # 이미 계산됨
+
+    rng = random.Random(scenario["seed"])
+    dur = scenario["duration_s"]
+    step = scenario["time_step_s"]
+    times = [round(i * step, 6) for i in range(int(round(dur / step)) + 1)]
+    x_min, x_max = scenario["x_range"]
+    y_min, y_max = scenario["y_range"]
+    sp_min, sp_max = scenario["speed_range"]
+
+    traj: dict[int, dict[float, tuple]] = {}
+    spd_map: dict[int, dict[float, float]] = {}
+
+    for uid in range(NUM_UAVS):
+        x = rng.uniform(x_min, x_max)
+        y = rng.uniform(y_min, y_max)
+        speed = rng.uniform(sp_min, sp_max)
+        wx = rng.uniform(x_min, x_max)
+        wy = rng.uniform(y_min, y_max)
+
+        pos_by_t: dict[float, tuple] = {}
+        spd_by_t: dict[float, float] = {}
+
+        for t in times:
+            dist_to_wp = math.hypot(wx - x, wy - y)
+            if dist_to_wp < 0.5:
+                wx = rng.uniform(x_min, x_max)
+                wy = rng.uniform(y_min, y_max)
+                speed = rng.uniform(sp_min, sp_max)
+                dist_to_wp = math.hypot(wx - x, wy - y)
+
+            move = speed * step
+            if move >= dist_to_wp:
+                x, y = wx, wy
+            else:
+                ratio = move / dist_to_wp
+                x += (wx - x) * ratio
+                y += (wy - y) * ratio
+
+            pos_by_t[t] = (round(x, 3), round(y, 3))
+            spd_by_t[t] = round(speed, 3)
+
+        traj[uid] = pos_by_t
+        spd_map[uid] = spd_by_t
+
+    scenario["_rwp_traj"] = traj
+    scenario["_rwp_speed"] = spd_map
+
+
 def _pos(scenario: dict, uav_id: int, time_s: float) -> tuple[float, float]:
     mobility = scenario.get("mobility", "linear")
+
+    if mobility == "random_waypoint":
+        return scenario["_rwp_traj"][uav_id].get(time_s, (0.0, 0.0))
 
     if mobility == "circular":
         cx, cy = scenario["center"]
@@ -287,6 +392,8 @@ def _pos(scenario: dict, uav_id: int, time_s: float) -> tuple[float, float]:
 def _speed_at(scenario: dict, uav_id: int, time_s: float) -> float:
     """현재 시간의 UAV 속도 크기 (m/s)."""
     mobility = scenario.get("mobility", "linear")
+    if mobility == "random_waypoint":
+        return scenario["_rwp_speed"][uav_id].get(time_s, 0.0)
     if mobility == "circular":
         orb = scenario["orbits"][uav_id]
         return round(orb["radius"] * abs(orb["angular_velocity_rad_s"]), 3)
@@ -468,6 +575,9 @@ def _time_steps(scenario: dict) -> list[float]:
 
 def _generate_scenario(scenario: dict) -> tuple[list[dict], list[dict], list[dict]]:
     """Return (position_rows, link_rows, summary_rows) for one scenario."""
+    if scenario.get("mobility") == "random_waypoint":
+        _build_rwp_trajectory(scenario)
+
     sid = scenario["scenario_id"]
     relay = scenario["relay_uav"]
     pos_rows: list[dict] = []
