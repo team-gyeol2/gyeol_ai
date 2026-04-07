@@ -297,6 +297,222 @@ SCENARIOS: list[dict] = [
         "y_range": (40.0, 90.0),
         "speed_range": (1.0, 5.0),
     },
+    # ── 동적 relay 전환 시나리오 3개 ─────────────────────────────────────────
+    {
+        "scenario_id": "relay_handover",
+        "description": (
+            "UAV1 and UAV2 swap roles: UAV2 starts as relay at center and moves "
+            "east while UAV1 approaches from the east. Relay switches UAV2→UAV1 "
+            "around t=5s, then UAV1→UAV3 around t=20s as UAV1 drifts past center."
+        ),
+        "mobility": "linear",
+        "relay_uav": 2,
+        "duration_s": 30.0,
+        "time_step_s": 0.25,
+        "initial_positions": {
+            0: ( 60.0, 90.0),
+            1: (150.0, 60.0),
+            2: (100.0, 60.0),
+            3: ( 60.0, 30.0),
+            4: (105.0, 45.0),
+        },
+        "velocities": {
+            0: ( 0.5,  0.0),
+            1: (-5.0,  0.0),
+            2: ( 5.0,  0.0),
+            3: ( 0.5,  0.0),
+            4: ( 0.0,  0.0),
+        },
+    },
+    {
+        "scenario_id": "relay_rotation",
+        "description": (
+            "Three-phase relay baton pass: UAV2 holds relay in phase1, "
+            "swaps position with UAV0 in phase2 (relay→UAV0), then UAV0 "
+            "swaps with UAV4 in phase3 (relay→UAV4). Two clear relay "
+            "switches at t≈24s and t≈39s."
+        ),
+        "mobility": "phases",
+        "relay_uav": 2,
+        "duration_s": 45.0,
+        "time_step_s": 0.25,
+        "phases": [
+            {
+                "duration_s": 15.0,
+                "initial_positions": {
+                    0: ( 50.0, 110.0),
+                    1: (150.0, 110.0),
+                    2: (100.0,  60.0),
+                    3: ( 50.0,  10.0),
+                    4: (150.0,  10.0),
+                },
+                "velocities": {
+                    0: (0.0, 0.0),
+                    1: (0.0, 0.0),
+                    2: (0.0, 0.0),
+                    3: (0.0, 0.0),
+                    4: (0.0, 0.0),
+                },
+            },
+            {
+                "duration_s": 15.0,
+                "velocities": {
+                    0: ( 50/15, -50/15),
+                    1: (0.0, 0.0),
+                    2: (-50/15,  50/15),
+                    3: (0.0, 0.0),
+                    4: (0.0, 0.0),
+                },
+            },
+            {
+                "duration_s": 15.0,
+                "velocities": {
+                    0: ( 50/15, -50/15),
+                    1: (0.0, 0.0),
+                    2: (0.0, 0.0),
+                    3: (0.0, 0.0),
+                    4: (-50/15,  50/15),
+                },
+            },
+        ],
+    },
+    {
+        "scenario_id": "relay_competition",
+        "description": (
+            "Four UAVs take turns converging to the center while the current "
+            "relay disperses. Four-phase structure produces three relay switches: "
+            "UAV2→UAV0→UAV3→UAV1, giving the model diverse relay-transition "
+            "patterns not seen in other scenarios."
+        ),
+        "mobility": "phases",
+        "relay_uav": 2,
+        "duration_s": 40.0,
+        "time_step_s": 0.25,
+        "phases": [
+            {
+                "duration_s": 10.0,
+                "initial_positions": {
+                    0: (160.0,  10.0),
+                    1: (160.0, 110.0),
+                    2: (100.0,  60.0),
+                    3: ( 40.0,  10.0),
+                    4: ( 40.0, 110.0),
+                },
+                "velocities": {
+                    0: (0.0, 0.0),
+                    1: (0.0, 0.0),
+                    2: (0.0, 0.0),
+                    3: (0.0, 0.0),
+                    4: (0.0, 0.0),
+                },
+            },
+            {
+                "duration_s": 10.0,
+                "velocities": {
+                    0: (-60/10,  50/10),
+                    1: (0.0, 0.0),
+                    2: ( 60/10, -50/10),
+                    3: (0.0, 0.0),
+                    4: (0.0, 0.0),
+                },
+            },
+            {
+                "duration_s": 10.0,
+                "velocities": {
+                    0: ( 60/10, -50/10),
+                    1: (0.0, 0.0),
+                    2: (0.0, 0.0),
+                    3: ( 60/10,  50/10),
+                    4: (0.0, 0.0),
+                },
+            },
+            {
+                "duration_s": 10.0,
+                "velocities": {
+                    0: (0.0, 0.0),
+                    1: (-60/10, -50/10),
+                    2: (0.0, 0.0),
+                    3: (-60/10,  50/10),
+                    4: (0.0, 0.0),
+                },
+            },
+        ],
+    },
+    # ── UAV4 중심 relay 전환 시나리오 2개 ────────────────────────────────────
+    {
+        "scenario_id": "relay_uav4_handover",
+        "description": (
+            "UAV4 starts at center as relay. As UAV4 drifts west and exits "
+            "the network, UAV1 moves in from the east to take over as relay "
+            "(UAV4→UAV1 at t≈20s). Provides UAV4-as-relay patterns rare in "
+            "other scenarios."
+        ),
+        "mobility": "linear",
+        "relay_uav": 4,
+        "duration_s": 35.0,
+        "time_step_s": 0.25,
+        "initial_positions": {
+            0: ( 60.0, 90.0),
+            1: (160.0, 90.0),
+            2: ( 60.0, 30.0),
+            3: (160.0, 30.0),
+            4: (110.0, 60.0),
+        },
+        "velocities": {
+            0: (0.0,   0.0),
+            1: (-5.0, -3.0),
+            2: (0.0,   0.0),
+            3: (0.0,   0.0),
+            4: (-5.0,  0.0),
+        },
+    },
+    {
+        "scenario_id": "relay_uav4_rotation",
+        "description": (
+            "Three-phase baton pass starting with UAV4 at center. "
+            "Phase1: UAV4 relay (0~15s). "
+            "Phase2: UAV4↔UAV0 swap → UAV0 relay (15~30s). "
+            "Phase3: UAV0↔UAV3 swap → UAV3 relay (30~45s). "
+            "Provides UAV4→UAV0→UAV3 transition sequence."
+        ),
+        "mobility": "phases",
+        "relay_uav": 4,
+        "duration_s": 45.0,
+        "time_step_s": 0.25,
+        "phases": [
+            {
+                "duration_s": 15.0,
+                "initial_positions": {
+                    0: ( 50.0, 110.0),
+                    1: (170.0, 110.0),
+                    2: ( 50.0,  10.0),
+                    3: (170.0,  10.0),
+                    4: (110.0,  60.0),
+                },
+                "velocities": {i: (0.0, 0.0) for i in range(5)},
+            },
+            {
+                "duration_s": 15.0,
+                "velocities": {
+                    0: ( 60/15, -50/15),
+                    1: (0.0,    0.0),
+                    2: (0.0,    0.0),
+                    3: (0.0,    0.0),
+                    4: (-60/15,  50/15),
+                },
+            },
+            {
+                "duration_s": 15.0,
+                "velocities": {
+                    0: ( 60/15, -50/15),
+                    1: (0.0,    0.0),
+                    2: (0.0,    0.0),
+                    3: (-120/15, 50/15),
+                    4: (0.0,    0.0),
+                },
+            },
+        ],
+    },
 ]
 
 
@@ -600,6 +816,15 @@ def _generate_scenario(scenario: dict) -> tuple[list[dict], list[dict], list[dic
                 "role": "relay_anchor" if uid == relay else "peripheral",
             })
 
+        # 최적 relay_uav 계산 (평균 RSSI 기준)
+        def _avg_rssi(uid: int) -> float:
+            others = [j for j in range(NUM_UAVS) if j != uid]
+            return sum(
+                -46.0 - 20.0 * math.log10(max(_dist(positions[uid], positions[j]), 1.0))
+                for j in others
+            ) / len(others)
+        optimal_relay = max(range(NUM_UAVS), key=_avg_rssi)
+
         # Link metrics for every ordered pair (src < dst)
         pair_rows: list[dict] = []
         for src in range(NUM_UAVS):
@@ -645,6 +870,7 @@ def _generate_scenario(scenario: dict) -> tuple[list[dict], list[dict], list[dic
                     "throughput_mbps_est": m["throughput_mbps"],
                     "link_state": m["state"],
                     "reconfig_trigger": "yes" if trigger else "no",
+                    "optimal_relay_uav": optimal_relay,
                 }
                 link_rows.append(row)
                 pair_rows.append(row)
@@ -748,7 +974,7 @@ def main() -> None:
             "hop_count", "route_type",
             "blocked_building_count", "blocked_building_ids", "blocked_attenuation_db",
             "rssi_dbm_est", "plr_pct_est", "rtt_ms_est", "throughput_mbps_est",
-            "link_state", "reconfig_trigger",
+            "link_state", "reconfig_trigger", "optimal_relay_uav",
         ],
         all_links,
     )

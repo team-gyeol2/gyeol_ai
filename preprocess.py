@@ -29,12 +29,19 @@ FEATURES = [
     "hop_count",
     "blocked_building_count",
 ]
-TARGET  = "link_state"
-LABEL_MAP = {"healthy": 0, "degraded": 1, "disconnected": 2}
+TARGET      = "link_state"
+LABEL_MAP   = {"healthy": 0, "degraded": 1, "disconnected": 2}
+RELAY_TARGET = "optimal_relay_uav"  # 0~4 정수, 그대로 사용
 
 TRAIN_RATIO = 0.70
 VAL_RATIO   = 0.15
 # test = 나머지 0.15
+
+# relay 전환 시나리오는 val/test에 전환 구간이 더 많이 들어가도록 별도 비율 적용
+RELAY_SCENARIOS = {"relay_handover", "relay_rotation", "relay_competition"}
+RELAY_TRAIN_RATIO = 0.50
+RELAY_VAL_RATIO   = 0.25
+# relay test = 나머지 0.25
 
 
 def load_csv(path: Path) -> list[dict]:
@@ -43,11 +50,17 @@ def load_csv(path: Path) -> list[dict]:
 
 
 def split_scenario(rows: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
-    """시간 기준으로 한 시나리오의 rows를 train/val/test로 분할."""
+    """시간 기준으로 한 시나리오의 rows를 train/val/test로 분할.
+    relay 전환 시나리오는 50/25/25 비율 적용."""
+    sid = rows[0]["scenario_id"]
+    is_relay = sid in RELAY_SCENARIOS
+    tr = RELAY_TRAIN_RATIO if is_relay else TRAIN_RATIO
+    va = RELAY_VAL_RATIO   if is_relay else VAL_RATIO
+
     times = sorted(set(float(r["time_s"]) for r in rows))
     n = len(times)
-    train_end_idx = int(n * TRAIN_RATIO)
-    val_end_idx   = int(n * (TRAIN_RATIO + VAL_RATIO))
+    train_end_idx = int(n * tr)
+    val_end_idx   = int(n * (tr + va))
 
     train_times = set(times[:train_end_idx])
     val_times   = set(times[train_end_idx:val_end_idx])
@@ -84,7 +97,8 @@ def apply_scaling(rows: list[dict], params: dict) -> list[dict]:
         for f in FEATURES:
             val = float(r[f])
             new_r[f] = round((val - params[f]["mean"]) / params[f]["std"], 6)
-        new_r[TARGET] = LABEL_MAP[r[TARGET]]
+        new_r[TARGET]       = LABEL_MAP[r[TARGET]]
+        new_r[RELAY_TARGET] = int(r[RELAY_TARGET])
         scaled.append(new_r)
     return scaled
 

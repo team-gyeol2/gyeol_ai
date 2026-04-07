@@ -12366,6 +12366,368 @@
           "40.0": 2.127
         }
       }
+    },
+    {
+      "scenario_id": "relay_handover",
+      "description": "UAV1 and UAV2 swap roles: UAV2 starts as relay at center and moves east while UAV1 approaches from the east. Relay switches UAV2\u2192UAV1 around t=5s, then UAV1\u2192UAV3 around t=20s as UAV1 drifts past center.",
+      "mobility": "linear",
+      "relay_uav": 2,
+      "duration_s": 30.0,
+      "time_step_s": 0.25
+    },
+    {
+      "scenario_id": "relay_rotation",
+      "description": "Three-phase relay baton pass: UAV2 holds relay in phase1, swaps position with UAV0 in phase2 (relay\u2192UAV0), then UAV0 swaps with UAV4 in phase3 (relay\u2192UAV4). Two clear relay switches at t\u224824s and t\u224839s.",
+      "mobility": "phases",
+      "relay_uav": 2,
+      "duration_s": 45.0,
+      "time_step_s": 0.25,
+      "phases": [
+        {
+          "duration_s": 15.0,
+          "initial_positions": {
+            "0": [
+              50.0,
+              110.0
+            ],
+            "1": [
+              150.0,
+              110.0
+            ],
+            "2": [
+              100.0,
+              60.0
+            ],
+            "3": [
+              50.0,
+              10.0
+            ],
+            "4": [
+              150.0,
+              10.0
+            ]
+          },
+          "velocities": {
+            "0": [
+              0.0,
+              0.0
+            ],
+            "1": [
+              0.0,
+              0.0
+            ],
+            "2": [
+              0.0,
+              0.0
+            ],
+            "3": [
+              0.0,
+              0.0
+            ],
+            "4": [
+              0.0,
+              0.0
+            ]
+          }
+        },
+        {
+          "duration_s": 15.0,
+          "velocities": {
+            "0": [
+              3.3333333333333335,
+              -3.3333333333333335
+            ],
+            "1": [
+              0.0,
+              0.0
+            ],
+            "2": [
+              -3.3333333333333335,
+              3.3333333333333335
+            ],
+            "3": [
+              0.0,
+              0.0
+            ],
+            "4": [
+              0.0,
+              0.0
+            ]
+          }
+        },
+        {
+          "duration_s": 15.0,
+          "velocities": {
+            "0": [
+              3.3333333333333335,
+              -3.3333333333333335
+            ],
+            "1": [
+              0.0,
+              0.0
+            ],
+            "2": [
+              0.0,
+              0.0
+            ],
+            "3": [
+              0.0,
+              0.0
+            ],
+            "4": [
+              -3.3333333333333335,
+              3.3333333333333335
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "scenario_id": "relay_competition",
+      "description": "Four UAVs take turns converging to the center while the current relay disperses. Four-phase structure produces three relay switches: UAV2\u2192UAV0\u2192UAV3\u2192UAV1, giving the model diverse relay-transition patterns not seen in other scenarios.",
+      "mobility": "phases",
+      "relay_uav": 2,
+      "duration_s": 40.0,
+      "time_step_s": 0.25,
+      "phases": [
+        {
+          "duration_s": 10.0,
+          "initial_positions": {
+            "0": [
+              160.0,
+              10.0
+            ],
+            "1": [
+              160.0,
+              110.0
+            ],
+            "2": [
+              100.0,
+              60.0
+            ],
+            "3": [
+              40.0,
+              10.0
+            ],
+            "4": [
+              40.0,
+              110.0
+            ]
+          },
+          "velocities": {
+            "0": [
+              0.0,
+              0.0
+            ],
+            "1": [
+              0.0,
+              0.0
+            ],
+            "2": [
+              0.0,
+              0.0
+            ],
+            "3": [
+              0.0,
+              0.0
+            ],
+            "4": [
+              0.0,
+              0.0
+            ]
+          }
+        },
+        {
+          "duration_s": 10.0,
+          "velocities": {
+            "0": [
+              -6.0,
+              5.0
+            ],
+            "1": [
+              0.0,
+              0.0
+            ],
+            "2": [
+              6.0,
+              -5.0
+            ],
+            "3": [
+              0.0,
+              0.0
+            ],
+            "4": [
+              0.0,
+              0.0
+            ]
+          }
+        },
+        {
+          "duration_s": 10.0,
+          "velocities": {
+            "0": [
+              6.0,
+              -5.0
+            ],
+            "1": [
+              0.0,
+              0.0
+            ],
+            "2": [
+              0.0,
+              0.0
+            ],
+            "3": [
+              6.0,
+              5.0
+            ],
+            "4": [
+              0.0,
+              0.0
+            ]
+          }
+        },
+        {
+          "duration_s": 10.0,
+          "velocities": {
+            "0": [
+              0.0,
+              0.0
+            ],
+            "1": [
+              -6.0,
+              -5.0
+            ],
+            "2": [
+              0.0,
+              0.0
+            ],
+            "3": [
+              -6.0,
+              5.0
+            ],
+            "4": [
+              0.0,
+              0.0
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "scenario_id": "relay_uav4_handover",
+      "description": "UAV4 starts at center as relay. As UAV4 drifts west and exits the network, UAV1 moves in from the east to take over as relay (UAV4\u2192UAV1 at t\u224820s). Provides UAV4-as-relay patterns rare in other scenarios.",
+      "mobility": "linear",
+      "relay_uav": 4,
+      "duration_s": 35.0,
+      "time_step_s": 0.25
+    },
+    {
+      "scenario_id": "relay_uav4_rotation",
+      "description": "Three-phase baton pass starting with UAV4 at center. Phase1: UAV4 relay (0~15s). Phase2: UAV4\u2194UAV0 swap \u2192 UAV0 relay (15~30s). Phase3: UAV0\u2194UAV3 swap \u2192 UAV3 relay (30~45s). Provides UAV4\u2192UAV0\u2192UAV3 transition sequence.",
+      "mobility": "phases",
+      "relay_uav": 4,
+      "duration_s": 45.0,
+      "time_step_s": 0.25,
+      "phases": [
+        {
+          "duration_s": 15.0,
+          "initial_positions": {
+            "0": [
+              50.0,
+              110.0
+            ],
+            "1": [
+              170.0,
+              110.0
+            ],
+            "2": [
+              50.0,
+              10.0
+            ],
+            "3": [
+              170.0,
+              10.0
+            ],
+            "4": [
+              110.0,
+              60.0
+            ]
+          },
+          "velocities": {
+            "0": [
+              0.0,
+              0.0
+            ],
+            "1": [
+              0.0,
+              0.0
+            ],
+            "2": [
+              0.0,
+              0.0
+            ],
+            "3": [
+              0.0,
+              0.0
+            ],
+            "4": [
+              0.0,
+              0.0
+            ]
+          }
+        },
+        {
+          "duration_s": 15.0,
+          "velocities": {
+            "0": [
+              4.0,
+              -3.3333333333333335
+            ],
+            "1": [
+              0.0,
+              0.0
+            ],
+            "2": [
+              0.0,
+              0.0
+            ],
+            "3": [
+              0.0,
+              0.0
+            ],
+            "4": [
+              -4.0,
+              3.3333333333333335
+            ]
+          }
+        },
+        {
+          "duration_s": 15.0,
+          "velocities": {
+            "0": [
+              4.0,
+              -3.3333333333333335
+            ],
+            "1": [
+              0.0,
+              0.0
+            ],
+            "2": [
+              0.0,
+              0.0
+            ],
+            "3": [
+              -8.0,
+              3.3333333333333335
+            ],
+            "4": [
+              0.0,
+              0.0
+            ]
+          }
+        }
+      ]
     }
   ],
   "thresholds": {
