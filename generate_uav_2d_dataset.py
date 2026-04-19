@@ -715,6 +715,7 @@ def _direct_link(a: tuple[float, float], b: tuple[float, float]) -> dict:
     plr = min(0.8 + max(0.0, dist - 15.0) * 0.24 + len(blockers) * 8.0, 95.0)
     rtt = 8.0 + dist * 0.22 + len(blockers) * 12.0
     throughput = max(1.2, 16.0 - dist * 0.23 - len(blockers) * 2.5)
+    snr = round(rssi - (-95.0), 3)  # noise floor -95 dBm (IEEE 802.11g)
 
     return {
         "distance_m": round(dist, 3),
@@ -722,6 +723,7 @@ def _direct_link(a: tuple[float, float], b: tuple[float, float]) -> dict:
         "blocked_building_ids": "|".join(bg["building_id"] for bg in blockers) or "none",
         "blocked_attenuation_db": round(total_atten, 1),
         "rssi_dbm": round(rssi, 3),
+        "snr_db": snr,
         "plr_pct": round(plr, 3),
         "rtt_ms": round(rtt, 3),
         "throughput_mbps": round(throughput, 3),
@@ -740,6 +742,7 @@ def _compose_two_hop(first: dict, second: dict) -> dict:
     end_plr = (1.0 - (1.0 - plr1) * (1.0 - plr2)) * 100.0
 
     rssi = min(first["rssi_dbm"], second["rssi_dbm"]) - 1.5
+    snr  = round(rssi - (-95.0), 3)
     rtt = first["rtt_ms"] + second["rtt_ms"] + 4.0
     throughput = max(1.0, min(first["throughput_mbps"], second["throughput_mbps"]) - 0.8)
 
@@ -754,6 +757,7 @@ def _compose_two_hop(first: dict, second: dict) -> dict:
         "blocked_building_ids": "|".join(sorted(combined)) or "none",
         "blocked_attenuation_db": blocked_atten,
         "rssi_dbm": round(rssi, 3),
+        "snr_db": snr,
         "plr_pct": round(end_plr, 3),
         "rtt_ms": round(rtt, 3),
         "throughput_mbps": round(throughput, 3),
@@ -865,6 +869,7 @@ def _generate_scenario(scenario: dict) -> tuple[list[dict], list[dict], list[dic
                     "blocked_building_ids": m["blocked_building_ids"],
                     "blocked_attenuation_db": m["blocked_attenuation_db"],
                     "rssi_dbm_est": m["rssi_dbm"],
+                    "snr_db_est": m["snr_db"],
                     "plr_pct_est": m["plr_pct"],
                     "rtt_ms_est": m["rtt_ms"],
                     "throughput_mbps_est": m["throughput_mbps"],
@@ -973,7 +978,7 @@ def main() -> None:
             "scenario_id", "time_s", "src_uav", "dst_uav", "distance_m",
             "hop_count", "route_type",
             "blocked_building_count", "blocked_building_ids", "blocked_attenuation_db",
-            "rssi_dbm_est", "plr_pct_est", "rtt_ms_est", "throughput_mbps_est",
+            "rssi_dbm_est", "snr_db_est", "plr_pct_est", "rtt_ms_est", "throughput_mbps_est",
             "link_state", "reconfig_trigger", "optimal_relay_uav",
         ],
         all_links,

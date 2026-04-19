@@ -2,17 +2,20 @@
 """
 pipeline.py
 ───────────
-통신 장애 예측 + 토폴로지 재구성 파이프라인
+통신 장애 예측 + 토폴로지 재구성 + 드론 재배치 파이프라인
 
-① LSTM / Transformer: 링크 시계열 → link_state 예측 (healthy/degraded/disconnected)
-② 규칙 기반 relay 선택:
+① LSTM / Transformer: 링크 시계열 → link_state 예측
+② 규칙 기반 토폴로지 재구성:
    - healthy / degraded → 현재 relay 유지
-   - disconnected       → 평균 RSSI 최고 UAV로 relay 전환
+   - disconnected       → 평균 RSSI 최고 UAV로 relay 전환 (ms 단위)
+③ 물리적 드론 재배치:
+   - relay 전환 후에도 고립 UAV 존재 시 position_correction 호출
 
 평가 지표:
    - link_state: Accuracy, Precision, Recall, F1-score (macro), Confusion Matrix
    - relay 선택 Accuracy
    - 파이프라인 전체 Accuracy
+   - 위치 보정 발동 횟수 및 성공률
 
 실행:
     python3 pipeline.py
@@ -30,13 +33,14 @@ import torch
 import torch.nn as nn
 from sklearn.metrics import (classification_report, confusion_matrix,
                              f1_score, precision_score, recall_score)
+from position_correction import correct_positions, load_positions, _connected_components
 
 ROOT     = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "ns-3.47" / "datasets" / "uav_2d_initial"
 OUT_DIR  = ROOT / "models"
 
-FEATURES    = ["rssi_dbm_est", "plr_pct_est", "distance_m",
-               "hop_count", "blocked_building_count"]
+FEATURES    = ["rssi_dbm_est", "snr_db_est", "plr_pct_est", "throughput_mbps_est",
+               "distance_m", "hop_count", "blocked_building_count"]
 PAIR_ORDER  = [(0,1),(0,2),(0,3),(0,4),(1,2),(1,3),(1,4),(2,3),(2,4),(3,4)]
 WINDOW_SIZE = 20
 STATE_NAMES = ["healthy", "degraded", "disconnected"]
@@ -46,7 +50,7 @@ STATE_NAMES = ["healthy", "degraded", "disconnected"]
 class LinkStateLSTM(nn.Module):
     def __init__(self):
         super().__init__()
-        self.lstm    = nn.LSTM(input_size=5, hidden_size=64,
+        self.lstm    = nn.LSTM(input_size=7, hidden_size=64,
                                num_layers=2, dropout=0.2, batch_first=True)
         self.dropout = nn.Dropout(0.2)
         self.head    = nn.Linear(64, 3)
@@ -75,7 +79,7 @@ class PositionalEncoding(nn.Module):
 class LinkStateTransformer(nn.Module):
     def __init__(self):
         super().__init__()
-        self.input_proj = nn.Linear(5, 64)
+        self.input_proj = nn.Linear(7, 64)
         self.pos_enc    = PositionalEncoding(64, dropout=0.2)
         encoder_layer   = nn.TransformerEncoderLayer(
             d_model=64, nhead=4, dim_feedforward=128,
@@ -92,19 +96,56 @@ class LinkStateTransformer(nn.Module):
         return self.head(last)
 
 
-# ── 규칙 기반 relay 선택 ──────────────────────────────────────────────────────
+# ── 규칙 기반 relay 선택 (가중합 score 기반) ─────────────────────────────────
+# Score_i = w1·R + w2·S + w3·P + w4·T + w5·D + w6·H + w7·B
+# R,S,T: 클수록 좋음 (정방향 정규화)
+# P,D,H,B: 작을수록 좋음 (역정규화)
+WEIGHTS = {
+    "rssi_dbm_est":        0.20,
+    "snr_db_est":          0.15,
+    "plr_pct_est":         0.20,
+    "throughput_mbps_est": 0.15,
+    "distance_m":          0.10,
+    "hop_count":           0.10,
+    "blocked_building_count": 0.10,
+}
+INVERT = {"plr_pct_est", "distance_m", "hop_count", "blocked_building_count"}
+
+
 def rule_based_relay(snapshot: dict, current_relay: int) -> int:
-    rssi_sum   = defaultdict(float)
-    rssi_count = defaultdict(int)
+    # UAV별 feature 평균 집계
+    feat_sum: dict[int, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    feat_cnt: dict[int, int] = defaultdict(int)
     for (src, dst), r in snapshot.items():
-        rssi_val = float(r["rssi_dbm_est"])
-        rssi_sum[src]   += rssi_val; rssi_count[src] += 1
-        rssi_sum[dst]   += rssi_val; rssi_count[dst] += 1
-    avg_rssi = {uid: rssi_sum[uid] / rssi_count[uid]
-                for uid in rssi_sum if rssi_count[uid] > 0}
-    if not avg_rssi:
+        for f in WEIGHTS:
+            val = float(r[f]) if f in r else 0.0
+            feat_sum[src][f] += val
+            feat_sum[dst][f] += val
+        feat_cnt[src] += 1
+        feat_cnt[dst]  += 1
+
+    if not feat_cnt:
         return current_relay
-    return max(avg_rssi, key=avg_rssi.get)
+
+    uav_avg: dict[int, dict[str, float]] = {
+        uid: {f: feat_sum[uid][f] / feat_cnt[uid] for f in WEIGHTS}
+        for uid in feat_cnt
+    }
+
+    # feature별 min-max (UAV 간)
+    f_min = {f: min(uav_avg[u][f] for u in uav_avg) for f in WEIGHTS}
+    f_max = {f: max(uav_avg[u][f] for u in uav_avg) for f in WEIGHTS}
+
+    def normalize(val: float, f: str) -> float:
+        rng = f_max[f] - f_min[f]
+        n = (val - f_min[f]) / rng if rng > 1e-8 else 0.5
+        return (1.0 - n) if f in INVERT else n
+
+    scores = {
+        uid: sum(WEIGHTS[f] * normalize(uav_avg[uid][f], f) for f in WEIGHTS)
+        for uid in uav_avg
+    }
+    return max(scores, key=scores.get)
 
 
 # ── 데이터 로딩 ───────────────────────────────────────────────────────────────
@@ -143,9 +184,12 @@ def run_pipeline(split: str, model: nn.Module, device: torch.device,
         pair = (int(r["src_uav"]), int(r["dst_uav"]))
         snapshots_raw[key][pair] = r
 
+    positions_db = load_positions()
+
     model.eval()
     y_true_state, y_pred_state = [], []
     relay_correct = pipeline_correct = total = 0
+    correction_triggered = correction_success = 0
 
     for (sid, src, dst), grp in groups.items():
         grp_sorted = sorted(grp, key=lambda r: float(r["time_s"]))
@@ -175,6 +219,17 @@ def run_pipeline(split: str, model: nn.Module, device: torch.device,
                            if pred_state == 2 else current_relay
             true_relay   = int(target_row["optimal_relay_uav"])
 
+            # ③ 물리적 드론 재배치 — relay 전환 후에도 고립 UAV 존재 시
+            pos_key = (sid, t_s)
+            if pred_state == 2 and pos_key in positions_db:
+                positions = positions_db[pos_key]
+                comps = _connected_components(positions)
+                if len(comps) > 1:
+                    correction_triggered += 1
+                    result = correct_positions(positions)
+                    if result["success"]:
+                        correction_success += 1
+
             y_true_state.append(true_state)
             y_pred_state.append(pred_state)
             relay_correct    += (chosen_relay == true_relay)
@@ -201,6 +256,10 @@ def run_pipeline(split: str, model: nn.Module, device: torch.device,
     print(f"\n[파이프라인]")
     print(f"  relay 선택 Accuracy : {relay_correct/total*100:.2f}%  ({relay_correct}/{total})")
     print(f"  전체 파이프라인 Acc  : {pipeline_correct/total*100:.2f}%  ({pipeline_correct}/{total})")
+    if correction_triggered > 0:
+        print(f"\n[드론 재배치]")
+        print(f"  발동 횟수 : {correction_triggered}")
+        print(f"  복원 성공 : {correction_success}  ({correction_success/correction_triggered*100:.1f}%)")
 
 
 def main():

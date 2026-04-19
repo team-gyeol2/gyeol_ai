@@ -34,7 +34,7 @@ DATA_DIR = ROOT / "ns-3.47" / "datasets" / "uav_2d_initial"
 OUT_DIR  = ROOT / "models"
 OUT_DIR.mkdir(exist_ok=True)
 
-INPUT_SIZE   = 5
+INPUT_SIZE   = 7
 D_MODEL      = 64
 NHEAD        = 4       # attention head 수 (D_MODEL의 약수)
 NUM_LAYERS   = 2

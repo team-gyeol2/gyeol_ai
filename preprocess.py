@@ -2,7 +2,7 @@
 """
 preprocess.py
 ─────────────
-1. 5개 feature 추출 (rssi_dbm_est, plr_pct_est, distance_m, hop_count, blocked_building_count)
+1. 7개 feature 추출 (rssi_dbm_est, snr_db_est, plr_pct_est, throughput_mbps_est, distance_m, hop_count, blocked_building_count)
 2. 시나리오별 시간 기준 70/15/15 분할 → train / val / test
 3. train 기준 StandardScaler fit → val/test에 transform만 적용 (data leakage 방지)
 4. 결과 저장: datasets/uav_2d_initial/train.csv, val.csv, test.csv
@@ -24,7 +24,9 @@ DATA_DIR = ROOT / "ns-3.47" / "datasets" / "uav_2d_initial"
 
 FEATURES = [
     "rssi_dbm_est",
+    "snr_db_est",
     "plr_pct_est",
+    "throughput_mbps_est",
     "distance_m",
     "hop_count",
     "blocked_building_count",

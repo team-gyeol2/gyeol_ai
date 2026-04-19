@@ -34,7 +34,7 @@ DATA_DIR = ROOT / "ns-3.47" / "datasets" / "uav_2d_initial"
 OUT_DIR  = ROOT / "models"
 OUT_DIR.mkdir(exist_ok=True)
 
-INPUT_SIZE  = 5
+INPUT_SIZE  = 7
 HIDDEN_SIZE = 64
 NUM_LAYERS  = 2
 DROPOUT     = 0.2

@@ -29,8 +29,8 @@ import numpy as np
 ROOT     = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "ns-3.47" / "datasets" / "uav_2d_initial"
 
-FEATURES    = ["rssi_dbm_est", "plr_pct_est", "distance_m",
-                "hop_count", "blocked_building_count"]
+FEATURES    = ["rssi_dbm_est", "snr_db_est", "plr_pct_est", "throughput_mbps_est",
+               "distance_m", "hop_count", "blocked_building_count"]
 WINDOW_SIZE = 20   # 20 × 0.25s = 5초
 PAIR_ORDER  = [(0,1),(0,2),(0,3),(0,4),(1,2),(1,3),(1,4),(2,3),(2,4),(3,4)]
 
