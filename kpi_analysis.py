@@ -173,6 +173,8 @@ def _run_system(groups, raw_lookup, snapshots_raw, positions_db,
     total         = 0
     total_move_m  = 0.0
     all_true_states: list[int] = []
+    proactive_trigger = 0   # pred=degraded AND ew=disconnected AND bad_streak>=THRESH
+    disconnection_avoided = 0  # 위 조건 발동 후 1s 뒤 true_state != disconnected
 
     for (sid, src, dst), grp in groups.items():
         grp_sorted = sorted(grp, key=lambda r: float(r["time_s"]))
@@ -237,6 +239,16 @@ def _run_system(groups, raw_lookup, snapshots_raw, positions_db,
 
             bad_streak = bad_streak + 1 if is_bad else 0
 
+            # ── 단절 회피율 집계 (proactive 전용) ─────────────────────────
+            if (mode == "proactive" and bad_streak >= HYSTERESIS_THRESH
+                    and pred_state == 1 and ew_state == 2):
+                proactive_trigger += 1
+                future_idx = i + WINDOW_SIZE - 1 + 4   # 1초 후 (4 steps)
+                if future_idx < n:
+                    future_state = int(grp_sorted[future_idx]["link_state"])
+                    if future_state != 2:
+                        disconnection_avoided += 1
+
             # ── relay 선택 ─────────────────────────────────────────────────
             if mode == "no_control":
                 chosen_relay = current_relay
@@ -267,12 +279,18 @@ def _run_system(groups, raw_lookup, snapshots_raw, positions_db,
     # ── KPI 계산 ──────────────────────────────────────────────────────────────
     disc_episodes, avg_disc_len = count_episodes(all_true_states, target=2)
 
+    avoidance_rate = (disconnection_avoided / proactive_trigger
+                      if proactive_trigger > 0 else None)
+
     return {
         "통신_유지율":    comm_maintain / total if total > 0 else 0.0,
         "단절_횟수":      disc_episodes,
         "평균_복원_시간": avg_disc_len * TIME_STEP,   # steps → 초
         "임무_성공률":    relay_correct / total if total > 0 else 0.0,
         "에너지_이동거리": total_move_m,
+        "단절_회피율":    avoidance_rate,
+        "proactive_trigger": proactive_trigger,
+        "disconnection_avoided": disconnection_avoided,
         "total": total,
     }
 
@@ -385,19 +403,31 @@ def main():
         results[name] = r
 
     # ── 콘솔 테이블 출력 ──────────────────────────────────────────────────────
-    print("\n" + "=" * 82)
+    print("\n" + "=" * 95)
     print(f"  {'System':<22} {'통신유지율':>10} {'임무성공률':>10} "
-          f"{'단절횟수':>8} {'복원시간(s)':>11} {'이동거리(m)':>11}")
-    print("-" * 82)
+          f"{'단절횟수':>8} {'복원시간(s)':>11} {'이동거리(m)':>11} {'단절회피율':>11}")
+    print("-" * 95)
     for name, r in results.items():
         label = name.replace("\n", " ")
+        avoidance = (f"{r['단절_회피율']*100:>9.1f}%"
+                     if r["단절_회피율"] is not None else f"{'N/A':>10}")
         print(f"  {label:<22} "
               f"{r['통신_유지율']*100:>9.2f}%  "
               f"{r['임무_성공률']*100:>9.2f}%  "
               f"{r['단절_횟수']:>8d}  "
               f"{r['평균_복원_시간']:>10.2f}s  "
-              f"{r['에너지_이동거리']:>10.1f}m")
-    print("=" * 82)
+              f"{r['에너지_이동거리']:>10.1f}m  "
+              f"{avoidance}")
+    print("=" * 95)
+
+    # ── 단절 회피율 상세 출력 ─────────────────────────────────────────────────
+    print("\n[Proactive 단절 회피율 상세]")
+    for name, r in results.items():
+        if r["단절_회피율"] is not None:
+            label = name.replace("\n", " ")
+            print(f"  {label}: 사전전환 {r['proactive_trigger']}회 → "
+                  f"회피 성공 {r['disconnection_avoided']}회 "
+                  f"({r['단절_회피율']*100:.1f}%)")
 
     plot_kpi(results)
     print("Done.")
