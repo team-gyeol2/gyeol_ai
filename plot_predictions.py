@@ -214,10 +214,10 @@ def plot_timeline(device):
 def plot_metrics():
     metrics = {
         "LSTM": {
-            "Accuracy":  94.52,
-            "Precision": 96.00,
-            "Recall":    93.96,
-            "F1-score":  94.71,
+            "Accuracy":  96.61,
+            "Precision": 97.40,
+            "Recall":    94.16,
+            "F1-score":  95.53,
         },
         "Transformer": {
             "Accuracy":  99.74,
