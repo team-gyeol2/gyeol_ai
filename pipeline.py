@@ -44,6 +44,7 @@ FEATURES    = ["rssi_dbm_est", "snr_db_est", "plr_pct_est", "throughput_mbps_est
 PAIR_ORDER  = [(0,1),(0,2),(0,3),(0,4),(1,2),(1,3),(1,4),(2,3),(2,4),(3,4)]
 WINDOW_SIZE = 20
 STATE_NAMES = ["healthy", "degraded", "disconnected"]
+HYSTERESIS_THRESH = 2   # 연속 N스텝 이상 bad state 예측 시에만 relay 전환
 
 
 # ── 모델 정의 ─────────────────────────────────────────────────────────────────
@@ -113,7 +114,6 @@ INVERT = {"plr_pct_est", "distance_m", "hop_count", "blocked_building_count"}
 
 
 def rule_based_relay(snapshot: dict, current_relay: int) -> int:
-    # UAV별 feature 평균 집계
     feat_sum: dict[int, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     feat_cnt: dict[int, int] = defaultdict(int)
     for (src, dst), r in snapshot.items():
@@ -132,7 +132,6 @@ def rule_based_relay(snapshot: dict, current_relay: int) -> int:
         for uid in feat_cnt
     }
 
-    # feature별 min-max (UAV 간)
     f_min = {f: min(uav_avg[u][f] for u in uav_avg) for f in WEIGHTS}
     f_max = {f: max(uav_avg[u][f] for u in uav_avg) for f in WEIGHTS}
 
@@ -201,6 +200,9 @@ def run_pipeline(split: str, model: nn.Module, device: torch.device,
                                 dtype=np.float32)
         feat_tensor = torch.tensor(features, dtype=torch.float32).to(device)
 
+        bad_streak  = 0   # hysteresis: 연속 disconnected 예측 카운터
+        last_relay  = None
+
         for i in range(n - WINDOW_SIZE + 1):
             window     = feat_tensor[i : i + WINDOW_SIZE].unsqueeze(0)
             target_row = grp_sorted[i + WINDOW_SIZE - 1]
@@ -214,21 +216,35 @@ def run_pipeline(split: str, model: nn.Module, device: torch.device,
             snap          = snapshots_raw.get(snap_key, {})
             raw_row       = raw_lookup.get((sid, t_s, src, dst))
             current_relay = int(raw_row["optimal_relay_uav"]) if raw_row else 2
+            if last_relay is None:
+                last_relay = current_relay
 
-            chosen_relay = rule_based_relay(snap, current_relay) \
-                           if pred_state == 2 else current_relay
+            # hysteresis: disconnected 연속 판정 카운터
+            if pred_state == 2:
+                bad_streak += 1
+            else:
+                bad_streak = 0
+
+            # HYSTERESIS_THRESH 이상 연속 disconnected 시에만 relay 전환/재배치
+            if bad_streak >= HYSTERESIS_THRESH:
+                chosen_relay = rule_based_relay(snap, last_relay)
+                last_relay   = chosen_relay
+
+                pos_key = (sid, t_s)
+                if pos_key in positions_db:
+                    positions = positions_db[pos_key]
+                    comps = _connected_components(positions)
+                    if len(comps) > 1:
+                        correction_triggered += 1
+                        result = correct_positions(positions)
+                        if result["success"]:
+                            correction_success += 1
+            else:
+                # healthy/degraded 구간: 현재 optimal relay 추적
+                last_relay   = current_relay
+                chosen_relay = current_relay
+
             true_relay   = int(target_row["optimal_relay_uav"])
-
-            # ③ 물리적 드론 재배치 — relay 전환 후에도 고립 UAV 존재 시
-            pos_key = (sid, t_s)
-            if pred_state == 2 and pos_key in positions_db:
-                positions = positions_db[pos_key]
-                comps = _connected_components(positions)
-                if len(comps) > 1:
-                    correction_triggered += 1
-                    result = correct_positions(positions)
-                    if result["success"]:
-                        correction_success += 1
 
             y_true_state.append(true_state)
             y_pred_state.append(pred_state)

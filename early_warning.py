@@ -125,9 +125,14 @@ def train_model(lead_s: int, device: torch.device) -> dict:
     tr_loader = DataLoader(TensorDataset(torch.tensor(X_tr), torch.tensor(y_tr)),
                            batch_size=64, shuffle=True)
 
+    counts  = np.bincount(y_tr, minlength=3)
+    weights = len(y_tr) / (3.0 * counts)
+    class_weights = torch.tensor(weights, dtype=torch.float32).to(device)
+    print(f"  class weights  healthy:{weights[0]:.3f}  degraded:{weights[1]:.3f}  disconnected:{weights[2]:.3f}")
+
     model = EarlyWarningLSTM().to(device)
     opt   = torch.optim.Adam(model.parameters(), lr=0.001)
-    loss_fn = nn.CrossEntropyLoss()
+    loss_fn = nn.CrossEntropyLoss(weight=class_weights)
 
     best_val_loss = float("inf")
     patience_cnt  = 0

@@ -131,8 +131,15 @@ def main():
 
     print(f"train:{len(train_ds)}  val:{len(val_ds)}  test:{len(test_ds)}")
 
+    # 클래스 가중치: train 분포의 역빈도 (disconnected 과소예측 방지)
+    y_train = train_ds.tensors[1].numpy()
+    counts  = np.bincount(y_train, minlength=3)
+    weights = len(y_train) / (3.0 * counts)
+    class_weights = torch.tensor(weights, dtype=torch.float32).to(device)
+    print(f"class weights  healthy:{weights[0]:.3f}  degraded:{weights[1]:.3f}  disconnected:{weights[2]:.3f}")
+
     model     = LinkStateTransformer().to(device)
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
 
     print(f"파라미터 수: {sum(p.numel() for p in model.parameters()):,}")
