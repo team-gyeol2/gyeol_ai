@@ -27,6 +27,28 @@ import math
 import random
 from pathlib import Path
 
+# ── Channel noise parameters (AR(1) temporally-correlated) ───────────────────
+# Real wireless channels exhibit slow fading: noise persists across timesteps.
+# AR(1): noise[t] = rho * noise[t-1] + sqrt(1-rho^2) * sigma * eps
+#   RSSI_NOISE_STD  : shadowing amplitude (dBm)
+#   NOISE_CORR      : temporal correlation (0=white, 1=constant) — 0.9 = slow fading
+#   PLR_NOISE_STD   : packet loss fluctuation (%)
+RSSI_NOISE_STD = 8.0
+NOISE_CORR     = 0.88
+PLR_NOISE_STD  = 7.0
+PLR_NOISE_CORR = 0.85
+GPS_NOISE_STD  = 5.0   # ±5m GPS position error (typical UAV GPS accuracy)
+
+
+def _gen_ar1_noise(n_steps: int, std: float, rho: float, seed: int) -> list[float]:
+    """Generate AR(1) correlated noise sequence."""
+    rng = random.Random(seed)
+    innov_std = std * math.sqrt(1.0 - rho ** 2)
+    noise = [rng.gauss(0, std)]
+    for _ in range(n_steps - 1):
+        noise.append(rho * noise[-1] + rng.gauss(0, innov_std))
+    return noise
+
 ROOT = Path(__file__).resolve().parent
 OUT_DIR = ROOT / "ns-3.47" / "datasets" / "uav_2d_initial"
 
@@ -438,6 +460,501 @@ SCENARIOS: list[dict] = [
             },
         ],
     },
+    # ── [신규] 다중 동시 단절 시나리오 5개 ──────────────────────────────────────
+    {
+        "scenario_id": "multi_disconnect_fast",
+        "description": (
+            "UAV0/1/3 scatter simultaneously at high speed (8 m/s) in three "
+            "directions while UAV2/4 stay near center. Three links disconnect "
+            "within t=8s, producing multi-link simultaneous failure patterns."
+        ),
+        "mobility": "linear",
+        "relay_uav": 2,
+        "duration_s": 20.0,
+        "time_step_s": 0.25,
+        "initial_positions": {
+            0: (100.0, 60.0),
+            1: (100.0, 60.0),
+            2: (100.0, 60.0),
+            3: (100.0, 60.0),
+            4: (100.0, 60.0),
+        },
+        "velocities": {
+            0: ( 8.0,  5.0),
+            1: (-8.0,  5.0),
+            2: ( 0.0,  0.5),
+            3: ( 0.0, -8.0),
+            4: ( 0.5,  0.0),
+        },
+    },
+    {
+        "scenario_id": "multi_disconnect_slow",
+        "description": (
+            "All 5 UAVs slowly diverge from a common center at 2 m/s in different "
+            "directions. Provides gradual multi-link degradation → disconnection "
+            "transition with long degraded windows for each pair."
+        ),
+        "mobility": "linear",
+        "relay_uav": 2,
+        "duration_s": 35.0,
+        "time_step_s": 0.25,
+        "initial_positions": {i: (100.0, 60.0) for i in range(5)},
+        "velocities": {
+            0: ( 2.0,  2.0),
+            1: (-2.0,  2.0),
+            2: ( 0.2,  0.0),
+            3: (-2.0, -2.0),
+            4: ( 2.0, -2.0),
+        },
+    },
+    {
+        "scenario_id": "full_scatter",
+        "description": (
+            "All 5 UAVs scatter radially from center at 5 m/s. No relay stays "
+            "near center, causing complete network fragmentation by t≈15s. "
+            "Tests model behavior when no relay path exists for any pair."
+        ),
+        "mobility": "linear",
+        "relay_uav": 2,
+        "duration_s": 22.0,
+        "time_step_s": 0.25,
+        "initial_positions": {i: (100.0, 60.0) for i in range(5)},
+        "velocities": {
+            0: ( 5.0,  0.0),
+            1: (-5.0,  0.0),
+            2: ( 0.0,  5.0),
+            3: ( 0.0, -5.0),
+            4: ( 3.5,  3.5),
+        },
+    },
+    {
+        "scenario_id": "partial_disconnect",
+        "description": (
+            "UAV0/1 maintain close formation (healthy) while UAV3/4 drift far "
+            "apart (disconnected). UAV2 acts as relay in the middle but can only "
+            "bridge one side at a time. Tests partial network connectivity."
+        ),
+        "mobility": "phases",
+        "relay_uav": 2,
+        "duration_s": 30.0,
+        "time_step_s": 0.25,
+        "phases": [
+            {
+                "duration_s": 5.0,
+                "initial_positions": {
+                    0: ( 80.0, 65.0),
+                    1: ( 80.0, 55.0),
+                    2: (100.0, 60.0),
+                    3: (120.0, 65.0),
+                    4: (120.0, 55.0),
+                },
+                "velocities": {i: (0.0, 0.0) for i in range(5)},
+            },
+            {
+                "duration_s": 25.0,
+                "velocities": {
+                    0: ( 0.5,  0.3),
+                    1: ( 0.5, -0.3),
+                    2: ( 0.0,  0.0),
+                    3: ( 6.0,  0.5),
+                    4: ( 6.0, -0.5),
+                },
+            },
+        ],
+    },
+    {
+        "scenario_id": "wave_disconnect",
+        "description": (
+            "UAVs disconnect in sequence (cascade): UAV4 first at t≈5s, "
+            "UAV3 at t≈10s, UAV1 at t≈15s, UAV0 last at t≈20s. "
+            "Models cascading link failure scenario where farthest nodes "
+            "disconnect first."
+        ),
+        "mobility": "phases",
+        "relay_uav": 2,
+        "duration_s": 30.0,
+        "time_step_s": 0.25,
+        "phases": [
+            {
+                "duration_s": 3.0,
+                "initial_positions": {
+                    0: ( 80.0, 60.0),
+                    1: ( 90.0, 60.0),
+                    2: (100.0, 60.0),
+                    3: (110.0, 60.0),
+                    4: (120.0, 60.0),
+                },
+                "velocities": {i: (0.0, 0.0) for i in range(5)},
+            },
+            {
+                "duration_s": 27.0,
+                "velocities": {
+                    0: ( 1.5,  0.0),
+                    1: ( 2.0,  0.0),
+                    2: ( 0.0,  0.0),
+                    3: (-3.5,  0.0),
+                    4: (-7.0,  0.0),
+                },
+            },
+        ],
+    },
+    # ── [신규] 군집 분리 시나리오 3개 ────────────────────────────────────────────
+    {
+        "scenario_id": "cluster_split_2",
+        "description": (
+            "Swarm splits into two distinct clusters: UAV0/1 fly northeast, "
+            "UAV3/4 fly southwest, and UAV2 (relay) stays at center but "
+            "eventually loses connectivity to both clusters simultaneously."
+        ),
+        "mobility": "linear",
+        "relay_uav": 2,
+        "duration_s": 25.0,
+        "time_step_s": 0.25,
+        "initial_positions": {
+            0: (100.0, 62.0),
+            1: (100.0, 58.0),
+            2: (100.0, 60.0),
+            3: (100.0, 62.0),
+            4: (100.0, 58.0),
+        },
+        "velocities": {
+            0: ( 5.0,  3.0),
+            1: ( 5.0,  1.0),
+            2: ( 0.0,  0.0),
+            3: (-5.0, -1.0),
+            4: (-5.0, -3.0),
+        },
+    },
+    {
+        "scenario_id": "cluster_split_3",
+        "description": (
+            "Swarm splits into three clusters: UAV0/1 fly north, UAV3 flies "
+            "southeast, UAV4 flies southwest. UAV2 (relay) tries to bridge "
+            "but loses all three clusters by t≈18s. Three-way fragmentation."
+        ),
+        "mobility": "linear",
+        "relay_uav": 2,
+        "duration_s": 25.0,
+        "time_step_s": 0.25,
+        "initial_positions": {i: (100.0, 60.0) for i in range(5)},
+        "velocities": {
+            0: ( 1.0,  6.0),
+            1: (-1.0,  6.0),
+            2: ( 0.0,  0.5),
+            3: ( 6.0, -4.0),
+            4: (-6.0, -4.0),
+        },
+    },
+    {
+        "scenario_id": "split_and_rejoin",
+        "description": (
+            "Two-phase scenario: UAV0/1 and UAV3/4 split into two clusters "
+            "(t=0~15s), then reverse direction to rejoin (t=15~30s). "
+            "Tests disconnected→degraded→healthy recovery transition."
+        ),
+        "mobility": "phases",
+        "relay_uav": 2,
+        "duration_s": 30.0,
+        "time_step_s": 0.25,
+        "phases": [
+            {
+                "duration_s": 15.0,
+                "initial_positions": {
+                    0: (100.0, 62.0),
+                    1: (100.0, 58.0),
+                    2: (100.0, 60.0),
+                    3: (100.0, 62.0),
+                    4: (100.0, 58.0),
+                },
+                "velocities": {
+                    0: ( 5.5,  1.0),
+                    1: ( 5.5, -1.0),
+                    2: ( 0.0,  0.0),
+                    3: (-5.5,  1.0),
+                    4: (-5.5, -1.0),
+                },
+            },
+            {
+                "duration_s": 15.0,
+                "velocities": {
+                    0: (-5.5, -1.0),
+                    1: (-5.5,  1.0),
+                    2: ( 0.0,  0.0),
+                    3: ( 5.5, -1.0),
+                    4: ( 5.5,  1.0),
+                },
+            },
+        ],
+    },
+    # ── [신규] 복잡 relay 시나리오 4개 ──────────────────────────────────────────
+    {
+        "scenario_id": "relay_failure",
+        "description": (
+            "Relay UAV2 itself rapidly exits the network eastward (8 m/s) "
+            "while all other UAVs remain stationary. Relay path collapses "
+            "at t≈8s, all previously relay-dependent pairs disconnect "
+            "simultaneously."
+        ),
+        "mobility": "linear",
+        "relay_uav": 2,
+        "duration_s": 20.0,
+        "time_step_s": 0.25,
+        "initial_positions": {
+            0: ( 70.0, 80.0),
+            1: ( 70.0, 40.0),
+            2: (100.0, 60.0),
+            3: (130.0, 80.0),
+            4: (130.0, 40.0),
+        },
+        "velocities": {
+            0: (0.0, 0.0),
+            1: (0.0, 0.0),
+            2: (8.0, 0.0),
+            3: (0.0, 0.0),
+            4: (0.0, 0.0),
+        },
+    },
+    {
+        "scenario_id": "relay_oscillation",
+        "description": (
+            "Relay UAV2 oscillates east-west (±30 m, period≈20s) while "
+            "UAV0/3 are on the east side and UAV1/4 on the west side. "
+            "Link quality alternates between degraded/disconnected "
+            "rhythmically, testing model on periodic patterns."
+        ),
+        "mobility": "phases",
+        "relay_uav": 2,
+        "duration_s": 40.0,
+        "time_step_s": 0.25,
+        "phases": [
+            {
+                "duration_s": 10.0,
+                "initial_positions": {
+                    0: (140.0, 70.0),
+                    1: ( 60.0, 70.0),
+                    2: (100.0, 60.0),
+                    3: (140.0, 50.0),
+                    4: ( 60.0, 50.0),
+                },
+                "velocities": {
+                    0: (0.0, 0.0),
+                    1: (0.0, 0.0),
+                    2: (6.0, 0.0),
+                    3: (0.0, 0.0),
+                    4: (0.0, 0.0),
+                },
+            },
+            {
+                "duration_s": 10.0,
+                "velocities": {
+                    0: (0.0, 0.0),
+                    1: (0.0, 0.0),
+                    2: (-6.0, 0.0),
+                    3: (0.0, 0.0),
+                    4: (0.0, 0.0),
+                },
+            },
+            {
+                "duration_s": 10.0,
+                "velocities": {
+                    0: (0.0, 0.0),
+                    1: (0.0, 0.0),
+                    2: (6.0, 0.0),
+                    3: (0.0, 0.0),
+                    4: (0.0, 0.0),
+                },
+            },
+            {
+                "duration_s": 10.0,
+                "velocities": {
+                    0: (0.0, 0.0),
+                    1: (0.0, 0.0),
+                    2: (-6.0, 0.0),
+                    3: (0.0, 0.0),
+                    4: (0.0, 0.0),
+                },
+            },
+        ],
+    },
+    {
+        "scenario_id": "relay_chain_3hop",
+        "description": (
+            "Linear chain: UAV0 far west, UAV4 far east, with UAV1/UAV3 "
+            "as intermediate nodes and UAV2 as central bridge. Tests "
+            "multi-hop relay chain where link failure at any node cascades."
+        ),
+        "mobility": "linear",
+        "relay_uav": 2,
+        "duration_s": 30.0,
+        "time_step_s": 0.25,
+        "initial_positions": {
+            0: ( 50.0, 60.0),
+            1: ( 75.0, 60.0),
+            2: (100.0, 60.0),
+            3: (125.0, 60.0),
+            4: (150.0, 60.0),
+        },
+        "velocities": {
+            0: (-3.0,  0.5),
+            1: ( 0.5,  0.0),
+            2: ( 0.0,  0.0),
+            3: ( 0.5,  0.0),
+            4: ( 3.0, -0.5),
+        },
+    },
+    {
+        "scenario_id": "double_relay_compete",
+        "description": (
+            "Two candidate relays (UAV2, UAV3) both near center initially. "
+            "UAV2 drifts north and UAV3 drifts south, creating two competing "
+            "relay zones. UAV0/1 follow UAV2 cluster, UAV4 follows UAV3. "
+            "Tests relay selection under split relay topology."
+        ),
+        "mobility": "linear",
+        "relay_uav": 2,
+        "duration_s": 30.0,
+        "time_step_s": 0.25,
+        "initial_positions": {
+            0: ( 80.0, 72.0),
+            1: ( 80.0, 68.0),
+            2: (100.0, 70.0),
+            3: (100.0, 50.0),
+            4: (120.0, 48.0),
+        },
+        "velocities": {
+            0: ( 1.5,  1.0),
+            1: ( 1.5,  0.5),
+            2: ( 1.0,  3.0),
+            3: ( 1.0, -3.0),
+            4: ( 1.5, -1.0),
+        },
+    },
+    # ── [신규] 고속/불규칙 시나리오 4개 ─────────────────────────────────────────
+    {
+        "scenario_id": "high_speed_scatter",
+        "description": (
+            "All UAVs scatter at very high speed (10~12 m/s). Complete "
+            "disconnection achieved within t=6s. Tests model performance "
+            "on rapid state transitions with minimal degraded window."
+        ),
+        "mobility": "linear",
+        "relay_uav": 2,
+        "duration_s": 15.0,
+        "time_step_s": 0.25,
+        "initial_positions": {i: (100.0, 60.0) for i in range(5)},
+        "velocities": {
+            0: (10.0,  4.0),
+            1: (-10.0,  4.0),
+            2: ( 1.0,  0.0),
+            3: ( 4.0, -10.0),
+            4: (-4.0, -10.0),
+        },
+    },
+    {
+        "scenario_id": "asymmetric_scatter",
+        "description": (
+            "Asymmetric speeds: UAV0 moves very fast (9 m/s), UAV1 moderate "
+            "(5 m/s), UAV3 slow (2 m/s), UAV4 stationary. UAV2 is relay. "
+            "Creates staggered disconnection timing — UAV0 link fails first, "
+            "others degrade gradually."
+        ),
+        "mobility": "linear",
+        "relay_uav": 2,
+        "duration_s": 25.0,
+        "time_step_s": 0.25,
+        "initial_positions": {
+            0: (100.0, 60.0),
+            1: (100.0, 60.0),
+            2: (100.0, 60.0),
+            3: (100.0, 60.0),
+            4: (100.0, 60.0),
+        },
+        "velocities": {
+            0: ( 9.0,  0.0),
+            1: ( 0.0,  5.0),
+            2: ( 0.5,  0.0),
+            3: (-2.0,  0.0),
+            4: ( 0.0,  0.0),
+        },
+    },
+    {
+        "scenario_id": "chase_pattern",
+        "description": (
+            "UAV0 chases UAV4 which is always moving away; UAV1 chases UAV3 "
+            "similarly. UAV2 (relay) stays near center. Link quality between "
+            "pursuers and targets fluctuates rhythmically around degraded "
+            "threshold as spacing changes."
+        ),
+        "mobility": "phases",
+        "relay_uav": 2,
+        "duration_s": 40.0,
+        "time_step_s": 0.25,
+        "phases": [
+            {
+                "duration_s": 10.0,
+                "initial_positions": {
+                    0: ( 80.0, 75.0),
+                    1: ( 80.0, 45.0),
+                    2: (100.0, 60.0),
+                    3: (120.0, 45.0),
+                    4: (120.0, 75.0),
+                },
+                "velocities": {
+                    0: ( 5.0,  0.0),
+                    1: ( 5.0,  0.0),
+                    2: ( 0.0,  0.0),
+                    3: ( 5.0,  0.0),
+                    4: ( 5.0,  0.0),
+                },
+            },
+            {
+                "duration_s": 10.0,
+                "velocities": {
+                    0: ( 5.0,  0.0),
+                    1: ( 5.0,  0.0),
+                    2: ( 0.0,  0.0),
+                    3: (-5.0,  0.0),
+                    4: (-5.0,  0.0),
+                },
+            },
+            {
+                "duration_s": 10.0,
+                "velocities": {
+                    0: (-5.0,  0.0),
+                    1: (-5.0,  0.0),
+                    2: ( 0.0,  0.0),
+                    3: (-5.0,  0.0),
+                    4: (-5.0,  0.0),
+                },
+            },
+            {
+                "duration_s": 10.0,
+                "velocities": {
+                    0: (-5.0,  0.0),
+                    1: (-5.0,  0.0),
+                    2: ( 0.0,  0.0),
+                    3: ( 5.0,  0.0),
+                    4: ( 5.0,  0.0),
+                },
+            },
+        ],
+    },
+    {
+        "scenario_id": "random_waypoint_4",
+        "description": (
+            "Random Waypoint with seed=777 and wider map range. UAVs can "
+            "roam across a larger area (40-200m x 20-110m), producing more "
+            "extreme disconnection events than the original 3 RWP scenarios."
+        ),
+        "mobility": "random_waypoint",
+        "relay_uav": 2,
+        "duration_s": 40.0,
+        "time_step_s": 0.25,
+        "seed": 777,
+        "x_range": (40.0, 200.0),
+        "y_range": (20.0, 110.0),
+        "speed_range": (2.0, 10.0),
+    },
     # ── UAV4 중심 relay 전환 시나리오 2개 ────────────────────────────────────
     {
         "scenario_id": "relay_uav4_handover",
@@ -706,13 +1223,20 @@ def _link_state(rssi: float, plr: float) -> str:
     return "disconnected"
 
 
-def _direct_link(a: tuple[float, float], b: tuple[float, float]) -> dict:
-    dist = _dist(a, b)
+def _direct_link(a: tuple[float, float], b: tuple[float, float],
+                 rssi_noise: float = 0.0, plr_noise: float = 0.0,
+                 dist_noise: float = 0.0) -> dict:
+    dist = max(1.0, _dist(a, b) + dist_noise)  # GPS-measured distance (noisy)
     blockers = _blocked_buildings(a, b)
     total_atten = sum(bg["attenuation_db"] for bg in blockers)
 
-    rssi = -46.0 - 20.0 * math.log10(max(dist, 1.0)) - total_atten
-    plr = min(0.8 + max(0.0, dist - 15.0) * 0.24 + len(blockers) * 8.0, 95.0)
+    # Ground-truth (noiseless) values — used for link_state label
+    rssi_true = -46.0 - 20.0 * math.log10(max(dist, 1.0)) - total_atten
+    plr_true  = min(0.8 + max(0.0, dist - 15.0) * 0.24 + len(blockers) * 8.0, 95.0)
+
+    # Measured (noisy) values — used as ML features
+    rssi = rssi_true + rssi_noise
+    plr  = max(0.0, plr_true + plr_noise)
     rtt = 8.0 + dist * 0.22 + len(blockers) * 12.0
     throughput = max(1.2, 16.0 - dist * 0.23 - len(blockers) * 2.5)
     snr = round(rssi - (-95.0), 3)  # noise floor -95 dBm (IEEE 802.11g)
@@ -727,7 +1251,7 @@ def _direct_link(a: tuple[float, float], b: tuple[float, float]) -> dict:
         "plr_pct": round(plr, 3),
         "rtt_ms": round(rtt, 3),
         "throughput_mbps": round(throughput, 3),
-        "state": _link_state(rssi, plr),
+        "state": _link_state(rssi_true, plr_true),  # label = ground truth, not noisy
     }
 
 
@@ -804,7 +1328,23 @@ def _generate_scenario(scenario: dict) -> tuple[list[dict], list[dict], list[dic
     link_rows: list[dict] = []
     summary_rows: list[dict] = []
 
-    for t in _time_steps(scenario):
+    # Pre-generate AR(1) correlated noise per (src, dst) pair
+    times = _time_steps(scenario)
+    n_steps = len(times)
+    pair_seed_base = abs(hash(sid)) % (2**31)
+    link_rssi_noise: dict[tuple, list] = {}
+    link_plr_noise:  dict[tuple, list] = {}
+    link_dist_noise: dict[tuple, list] = {}
+    for src in range(NUM_UAVS):
+        for dst in range(src + 1, NUM_UAVS):
+            seed_r = (pair_seed_base + src * 100 + dst * 10) % (2**31)
+            seed_p = (pair_seed_base + src * 100 + dst * 10 + 1) % (2**31)
+            seed_d = (pair_seed_base + src * 100 + dst * 10 + 2) % (2**31)
+            link_rssi_noise[(src, dst)] = _gen_ar1_noise(n_steps, RSSI_NOISE_STD, NOISE_CORR, seed_r)
+            link_plr_noise[(src, dst)]  = _gen_ar1_noise(n_steps, PLR_NOISE_STD,  PLR_NOISE_CORR, seed_p)
+            link_dist_noise[(src, dst)] = _gen_ar1_noise(n_steps, GPS_NOISE_STD,  0.85, seed_d)
+
+    for t_idx, t in enumerate(times):
         positions = {uid: _pos(scenario, uid, t) for uid in range(NUM_UAVS)}
 
         # UAV position records
@@ -820,7 +1360,7 @@ def _generate_scenario(scenario: dict) -> tuple[list[dict], list[dict], list[dic
                 "role": "relay_anchor" if uid == relay else "peripheral",
             })
 
-        # 최적 relay_uav 계산 (평균 RSSI 기준)
+        # 최적 relay_uav 계산 (평균 RSSI 기준, 노이즈 없는 기준값 사용)
         def _avg_rssi(uid: int) -> float:
             others = [j for j in range(NUM_UAVS) if j != uid]
             return sum(
@@ -833,7 +1373,10 @@ def _generate_scenario(scenario: dict) -> tuple[list[dict], list[dict], list[dic
         pair_rows: list[dict] = []
         for src in range(NUM_UAVS):
             for dst in range(src + 1, NUM_UAVS):
-                direct = _direct_link(positions[src], positions[dst])
+                rn = link_rssi_noise[(src, dst)][t_idx]
+                pn = link_plr_noise[(src, dst)][t_idx]
+                dn = link_dist_noise[(src, dst)][t_idx]
+                direct = _direct_link(positions[src], positions[dst], rn, pn, dn)
 
                 # Start with direct link info; may be overwritten by relay below.
                 m = dict(direct)
@@ -846,8 +1389,16 @@ def _generate_scenario(scenario: dict) -> tuple[list[dict], list[dict], list[dic
                     hop_count = 0  # no usable route yet
                     # Try single relay via relay_uav (only when neither endpoint IS the relay)
                     if src != relay and dst != relay:
-                        first = _direct_link(positions[src], positions[relay])
-                        second = _direct_link(positions[relay], positions[dst])
+                        k_sr = (min(src,relay), max(src,relay))
+                        k_rd = (min(relay,dst), max(relay,dst))
+                        first  = _direct_link(positions[src],   positions[relay],
+                                              link_rssi_noise.get(k_sr,[0]*n_steps)[t_idx],
+                                              link_plr_noise.get(k_sr,[0]*n_steps)[t_idx],
+                                              link_dist_noise.get(k_sr,[0]*n_steps)[t_idx])
+                        second = _direct_link(positions[relay], positions[dst],
+                                              link_rssi_noise.get(k_rd,[0]*n_steps)[t_idx],
+                                              link_plr_noise.get(k_rd,[0]*n_steps)[t_idx],
+                                              link_dist_noise.get(k_rd,[0]*n_steps)[t_idx])
                         if first["state"] != "disconnected" and second["state"] != "disconnected":
                             hop_count = 2
                             route = f"via_uav{relay}"
