@@ -43,13 +43,16 @@ OUT_DIR  = ROOT / "models"
 
 # ── 파라미터 ──────────────────────────────────────────────────────────────────
 STEP_M     = 5.0   # 한 번 이동 거리 (m)
-MAX_STEPS  = 50    # 최대 반복 횟수
+MAX_STEPS  = 20    # 최대 반복 횟수 (현실적 드론 기동 제한: 100m)
 NUM_UAVS   = 5
 
 HEALTHY_RSSI   = -78.0
 DEGRADED_RSSI  = -85.0
 HEALTHY_PLR    = 5.0
 DEGRADED_PLR   = 20.0
+
+RSSI_NOISE_STD = 5.0   # 채널 노이즈 표준편차 (dB) — 실제 무선 환경 반영
+BUILDING_ATTEN_MEAN = 8.0   # 건물 평균 감쇠 (dB) — 도심 환경 근사
 
 
 # ── LSTM 모델 (파이프라인용) ──────────────────────────────────────────────────
@@ -71,9 +74,17 @@ def _dist(a: tuple, b: tuple) -> float:
     return math.sqrt((a[0]-b[0])**2 + (a[1]-b[1])**2)
 
 
-def _link_state_from_dist(dist: float) -> str:
-    """건물 없다고 가정한 단순 거리 기반 링크 상태."""
-    rssi = -46.0 - 20.0 * math.log10(max(dist, 1.0))
+def _link_state_from_dist(dist: float, rng: np.random.Generator | None = None) -> str:
+    """거리 기반 링크 상태 (채널 노이즈 + 건물 감쇠 포함)."""
+    rssi_base = -46.0 - 20.0 * math.log10(max(dist, 1.0))
+    noise     = rng.normal(0.0, RSSI_NOISE_STD) if rng is not None else 0.0
+    # 거리 비례 건물 간섭 확률: 50m당 ~50% 확률로 평균 감쇠 적용
+    if rng is not None:
+        p_block = min(dist / 100.0, 1.0)
+        atten   = float(rng.exponential(BUILDING_ATTEN_MEAN)) if rng.random() < p_block else 0.0
+    else:
+        atten = 0.0
+    rssi = rssi_base + noise - atten
     plr  = min(0.8 + max(0.0, dist - 15.0) * 0.24, 95.0)
     if rssi >= HEALTHY_RSSI  and plr <= HEALTHY_PLR:
         return "healthy"
@@ -82,21 +93,23 @@ def _link_state_from_dist(dist: float) -> str:
     return "disconnected"
 
 
-def _all_link_states(positions: dict[int, tuple]) -> dict[tuple, str]:
+def _all_link_states(positions: dict[int, tuple],
+                     rng: np.random.Generator | None = None) -> dict[tuple, str]:
     """모든 UAV 쌍의 link_state 계산."""
     states = {}
     uav_ids = sorted(positions)
     for i, a in enumerate(uav_ids):
         for b in uav_ids[i+1:]:
             d = _dist(positions[a], positions[b])
-            states[(a, b)] = _link_state_from_dist(d)
+            states[(a, b)] = _link_state_from_dist(d, rng)
     return states
 
 
-def _connected_components(positions: dict[int, tuple]) -> list[set[int]]:
+def _connected_components(positions: dict[int, tuple],
+                          rng: np.random.Generator | None = None) -> list[set[int]]:
     """연결된 UAV 클러스터 반환 (disconnected 제외)."""
     adj = defaultdict(set)
-    for (a, b), state in _all_link_states(positions).items():
+    for (a, b), state in _all_link_states(positions, rng).items():
         if state != "disconnected":
             adj[a].add(b)
             adj[b].add(a)
@@ -125,7 +138,8 @@ def _centroid(positions: dict[int, tuple], uav_ids: set[int]) -> tuple:
 
 
 # ── 위치 보정 알고리즘 ────────────────────────────────────────────────────────
-def correct_positions(positions: dict[int, tuple]) -> dict:
+def correct_positions(positions: dict[int, tuple],
+                      seed: int | None = None) -> dict:
     """
     모든 UAV가 연결될 때까지 고립 UAV를 주 클러스터 방향으로 이동.
 
@@ -138,16 +152,16 @@ def correct_positions(positions: dict[int, tuple]) -> dict:
             "final_states": dict,
         }
     """
+    rng   = np.random.default_rng(seed)
     pos   = {uid: list(p) for uid, p in positions.items()}
     moves = defaultdict(float)
 
     for step in range(MAX_STEPS):
-        comps = _connected_components({uid: tuple(p) for uid, p in pos.items()})
+        comps = _connected_components({uid: tuple(p) for uid, p in pos.items()}, rng)
 
         if len(comps) == 1:
-            # 모든 UAV 연결됨
             final_pos    = {uid: tuple(p) for uid, p in pos.items()}
-            final_states = _all_link_states(final_pos)
+            final_states = _all_link_states(final_pos, rng)
             return {"success": True, "steps": step,
                     "final_positions": final_pos,
                     "moves": dict(moves),
@@ -157,11 +171,9 @@ def correct_positions(positions: dict[int, tuple]) -> dict:
         main_comp = max(comps, key=len)
         target    = _centroid({uid: tuple(p) for uid, p in pos.items()}, main_comp)
 
-        # 고립 UAV들을 주 클러스터 방향으로 STEP_M씩 이동
         for comp in comps:
             if comp == main_comp:
                 continue
-            # 고립 클러스터 자체 중심
             iso_center = _centroid({uid: tuple(p) for uid, p in pos.items()}, comp)
             dx = target[0] - iso_center[0]
             dy = target[1] - iso_center[1]
@@ -177,7 +189,7 @@ def correct_positions(positions: dict[int, tuple]) -> dict:
                 moves[uid]  += STEP_M
 
     final_pos    = {uid: tuple(p) for uid, p in pos.items()}
-    final_states = _all_link_states(final_pos)
+    final_states = _all_link_states(final_pos, rng)
     return {"success": False, "steps": MAX_STEPS,
             "final_positions": final_pos,
             "moves": dict(moves),
