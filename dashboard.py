@@ -17,6 +17,7 @@ UAV 군집 통신 장애 예측 & 복구 대시보드
 from __future__ import annotations
 
 import csv
+import json
 import math
 from collections import defaultdict
 from pathlib import Path
@@ -24,6 +25,7 @@ from pathlib import Path
 import dash
 from dash import Input, Output, State, callback, dcc, html, no_update
 import plotly.graph_objects as go
+from collections import deque
 
 ROOT     = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "ns-3.47" / "datasets" / "uav_2d_initial"
@@ -76,7 +78,250 @@ print("데이터 로딩 중...")
 OBSTACLES = _load_obstacles()
 POSITIONS, LINKS = _load_all()
 SCENARIOS = sorted(POSITIONS.keys())
+OUT_DIR = ROOT / "models"
 print(f"시나리오 {len(SCENARIOS)}개 로딩 완료")
+
+
+# ── 성능 지표 데이터 로딩 & 계산 ─────────────────────────────────────────────
+def _load_perf_data() -> dict:
+    # 1. 모델 비교
+    ens = json.load(open(OUT_DIR / "ensemble_results.json"))
+    lstm_hist = json.load(open(OUT_DIR / "lstm_history.json"))
+    trf_hist  = json.load(open(OUT_DIR / "transformer_history.json"))
+
+    model_compare = {
+        "models": ["LSTM", "Transformer", "Ensemble (평균)"],
+        "test_acc": [
+            ens["test"]["lstm"]["accuracy"] * 100,
+            ens["test"]["transformer"]["accuracy"] * 100,
+            ens["test"]["ensemble_avg"]["accuracy"] * 100,
+        ],
+        "test_f1": [
+            ens["test"]["lstm"]["f1"] * 100,
+            ens["test"]["transformer"]["f1"] * 100,
+            ens["test"]["ensemble_avg"]["f1"] * 100,
+        ],
+        "val_acc": [
+            ens["val"]["lstm"]["accuracy"] * 100,
+            ens["val"]["transformer"]["accuracy"] * 100,
+            ens["val"]["ensemble_avg"]["accuracy"] * 100,
+        ],
+        "train_history": {
+            "lstm": lstm_hist.get("history", []),
+            "transformer": trf_hist.get("history", []),
+        },
+    }
+
+    # 2. 멀티홉 결과 계산
+    NUM_UAVS = 5
+    results = defaultdict(lambda: {"total": 0, "direct": 0, "single": 0, "multi": 0})
+    for scenario, ts_dict in LINKS.items():
+        for t_s, lnks in ts_dict.items():
+            adj = defaultdict(set)
+            for (a, b), info in lnks.items():
+                if info["state"] != "disconnected":
+                    adj[a].add(b); adj[b].add(a)
+            for src in range(NUM_UAVS):
+                for dst in range(src + 1, NUM_UAVS):
+                    r = results[scenario]
+                    r["total"] += 1
+                    state = lnks.get((src, dst), {}).get("state", "disconnected")
+                    direct = state != "disconnected"
+                    if direct:
+                        r["direct"] += 1; r["single"] += 1; r["multi"] += 1
+                        continue
+                    # single relay
+                    relays = (adj.get(src, set()) & adj.get(dst, set())) - {src, dst}
+                    if relays:
+                        r["single"] += 1; r["multi"] += 1
+                        continue
+                    # BFS multi-hop
+                    queue = deque([[src]]); visited = {src}; found = False
+                    while queue and not found:
+                        path = queue.popleft()
+                        if len(path) > 4: break
+                        for nb in adj.get(path[-1], set()):
+                            if nb in visited: continue
+                            if nb == dst: found = True; break
+                            visited.add(nb); queue.append(path + [nb])
+                    if found:
+                        r["multi"] += 1
+
+    multihop = {
+        "scenarios": [],
+        "direct": [], "single": [], "multi": [],
+        "total_direct": 0, "total_single": 0, "total_multi": 0, "total_all": 0,
+    }
+    for sid in sorted(results):
+        r = results[sid]
+        if r["total"] == 0: continue
+        multihop["scenarios"].append(sid)
+        multihop["direct"].append(r["direct"] / r["total"] * 100)
+        multihop["single"].append(r["single"] / r["total"] * 100)
+        multihop["multi"].append(r["multi"] / r["total"] * 100)
+        multihop["total_direct"] += r["direct"]
+        multihop["total_single"] += r["single"]
+        multihop["total_multi"]  += r["multi"]
+        multihop["total_all"]    += r["total"]
+
+    # 3. 온라인 학습 (하드코딩 — online_learning.py 실행 결과)
+    online = {
+        "scenarios": ["wave_disconnect", "slow_separation", "split_and_rejoin"],
+        "before":    [97.94, 98.24, 98.24],
+        "after":     [98.73, 98.53, 98.82],
+    }
+
+    # 4. 위치 보정 성공률
+    correction = {
+        "labels":  ["기존 (단순 모델)", "개선 후 (노이즈+감쇠)"],
+        "success": [100.0, 90.0],
+        "failed":  [0.0, 10.0],
+        "note": "high_speed_scatter: 0% (드론 이미 100m+ 이탈)",
+    }
+
+    return {
+        "model_compare": model_compare,
+        "multihop": multihop,
+        "online": online,
+        "correction": correction,
+    }
+
+
+print("성능 지표 계산 중...")
+PERF = _load_perf_data()
+print("완료")
+
+
+# ── 성능 지표 그래프 함수 ──────────────────────────────────────────────────────
+def _make_model_compare() -> go.Figure:
+    p = PERF["model_compare"]
+    colors = ["#3498db", "#e74c3c", "#2ecc71"]
+    fig = go.Figure()
+    for metric, label, pattern in [("test_acc", "Accuracy", ""), ("test_f1", "F1 (macro)", "/")]:
+        fig.add_trace(go.Bar(
+            name=label, x=p["models"],
+            y=[p[metric][i] for i in range(3)],
+            marker=dict(color=colors, pattern_shape=pattern),
+            text=[f"{v:.2f}%" for v in [p[metric][i] for i in range(3)]],
+            textposition="outside",
+        ))
+    fig.update_layout(
+        barmode="group", height=280,
+        yaxis=dict(range=[85, 105], title="%"),
+        margin=dict(l=8, r=8, t=8, b=8),
+        plot_bgcolor="#f8f9fa", paper_bgcolor="white",
+        legend=dict(orientation="h", y=-0.2),
+    )
+    return fig
+
+
+def _make_train_curve() -> go.Figure:
+    hist = PERF["model_compare"]["train_history"]
+    fig = go.Figure()
+    for model, color in [("lstm", "#3498db"), ("transformer", "#e74c3c")]:
+        h = hist.get(model, [])
+        if h:
+            fig.add_trace(go.Scatter(
+                x=[r["epoch"] for r in h],
+                y=[r["val_acc"] * 100 for r in h],
+                name=model.upper(), line=dict(color=color, width=2),
+                mode="lines",
+            ))
+    fig.update_layout(
+        height=280, xaxis_title="Epoch", yaxis_title="Val Accuracy (%)",
+        margin=dict(l=8, r=8, t=8, b=8),
+        plot_bgcolor="#f8f9fa", paper_bgcolor="white",
+        legend=dict(orientation="h", y=-0.2),
+    )
+    return fig
+
+
+def _make_multihop() -> go.Figure:
+    mh = PERF["multihop"]
+    tot = mh["total_all"]
+    overall = {
+        "Direct":    mh["total_direct"] / tot * 100,
+        "Single":    mh["total_single"] / tot * 100,
+        "Multi-hop": mh["total_multi"]  / tot * 100,
+    }
+    fig = go.Figure()
+    colors = {"Direct": "#95a5a6", "Single": "#3498db", "Multi-hop": "#e74c3c"}
+    # 전체 요약 바 (왼쪽) + 시나리오별 (오른쪽) — 시나리오별만 표시
+    for method, key, color in [
+        ("Direct",    "direct", "#95a5a6"),
+        ("Single Relay", "single", "#3498db"),
+        ("Multi-hop", "multi",  "#e74c3c"),
+    ]:
+        fig.add_trace(go.Bar(
+            name=method, x=mh["scenarios"], y=mh[key],
+            marker_color=color, opacity=0.85,
+        ))
+    fig.add_annotation(
+        x=0.01, y=0.98, xref="paper", yref="paper", showarrow=False,
+        text=(f"전체 평균: Direct {overall['Direct']:.1f}%  "
+              f"Single {overall['Single']:.1f}%  "
+              f"Multi {overall['Multi-hop']:.1f}%"),
+        bgcolor="white", bordercolor="#ccc", borderwidth=1,
+        font=dict(size=11), align="left",
+    )
+    fig.update_layout(
+        barmode="group", height=300,
+        yaxis=dict(range=[0, 110], title="연결 성공률 (%)"),
+        xaxis=dict(tickangle=-35, tickfont=dict(size=9)),
+        margin=dict(l=8, r=8, t=8, b=8),
+        plot_bgcolor="#f8f9fa", paper_bgcolor="white",
+        legend=dict(orientation="h", y=-0.35),
+    )
+    return fig
+
+
+def _make_online() -> go.Figure:
+    ol = PERF["online"]
+    fig = go.Figure()
+    x = ol["scenarios"]
+    fig.add_trace(go.Bar(name="적응 전", x=x, y=ol["before"],
+                         marker_color="#95a5a6",
+                         text=[f"{v:.2f}%" for v in ol["before"]],
+                         textposition="inside"))
+    fig.add_trace(go.Bar(name="적응 후", x=x, y=ol["after"],
+                         marker_color="#27ae60",
+                         text=[f"{v:.2f}%" for v in ol["after"]],
+                         textposition="inside"))
+    for i, (b, a) in enumerate(zip(ol["before"], ol["after"])):
+        fig.add_annotation(x=x[i], y=a + 0.3, text=f"+{a-b:.2f}%p",
+                           showarrow=False, font=dict(size=10, color="#27ae60"))
+    fig.update_layout(
+        barmode="group", height=220,
+        yaxis=dict(range=[96, 100], title="Accuracy (%)"),
+        margin=dict(l=8, r=8, t=8, b=40),
+        plot_bgcolor="#f8f9fa", paper_bgcolor="white",
+        legend=dict(orientation="h", y=-0.3),
+        xaxis=dict(tickfont=dict(size=10)),
+    )
+    return fig
+
+
+def _make_correction() -> go.Figure:
+    cr = PERF["correction"]
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        name="성공", x=cr["labels"], y=cr["success"],
+        marker_color=["#e74c3c", "#27ae60"],
+        text=[f"{v:.0f}%" for v in cr["success"]],
+        textposition="outside",
+    ))
+    fig.add_annotation(
+        x=0.5, y=0.05, xref="paper", yref="paper", showarrow=False,
+        text=cr["note"], font=dict(size=10, color="#555"),
+        bgcolor="white", bordercolor="#ccc", borderwidth=1,
+    )
+    fig.update_layout(
+        height=200, yaxis=dict(range=[0, 115], title="성공률 (%)"),
+        margin=dict(l=8, r=8, t=8, b=8),
+        plot_bgcolor="#f8f9fa", paper_bgcolor="white",
+        showlegend=False,
+    )
+    return fig
 
 
 def get_ts(scenario: str) -> list[str]:
@@ -290,6 +535,9 @@ def make_figure(scenario: str, t_s: str,
 # ── 앱 ───────────────────────────────────────────────────────────────────────
 app = dash.Dash(__name__, title="UAV 통신 대시보드")
 
+CARD = {"background": "white", "borderRadius": 8, "padding": 16,
+        "boxShadow": "0 1px 4px rgba(0,0,0,.1)", "marginBottom": 16}
+
 app.layout = html.Div([
     dcc.Store(id="frame-store", data=0),
     dcc.Store(id="prev-relay-store", data=None),
@@ -304,6 +552,13 @@ app.layout = html.Div([
                   style={"color": "#bdc3c7", "fontSize": 13}),
     ], style={"background": "#2c3e50", "padding": "14px 24px",
               "display": "flex", "flexDirection": "column"}),
+
+    dcc.Tabs(id="main-tabs", value="tab-sim", children=[
+
+    # ════════════════════════════════════════════════════════════════════════
+    # TAB 1: 시뮬레이션 애니메이션
+    # ════════════════════════════════════════════════════════════════════════
+    dcc.Tab(label="📡 시뮬레이션", value="tab-sim", children=[
 
     # ── 컨트롤 바 ────────────────────────────────────────────────────────────
     html.Div([
@@ -408,6 +663,72 @@ app.layout = html.Div([
 
     ], style={"display": "flex", "padding": "14px 24px",
               "background": "#f5f6fa", "minHeight": "calc(100vh - 150px)"}),
+
+    ]),  # end Tab 1
+
+    # ════════════════════════════════════════════════════════════════════════
+    # TAB 2: 성능 지표
+    # ════════════════════════════════════════════════════════════════════════
+    dcc.Tab(label="📊 성능 지표", value="tab-perf", children=[
+        html.Div([
+
+            # 행 1: 모델 비교 + 학습 곡선
+            html.Div([
+                # 모델 성능 비교
+                html.Div([
+                    html.H4("모델 성능 비교 (Test Set)",
+                            style={"margin": "0 0 8px", "fontSize": 14, "color": "#2c3e50"}),
+                    dcc.Graph(id="model-compare-graph",
+                              config={"displayModeBar": False},
+                              figure=_make_model_compare()),
+                ], style={**CARD, "flex": 1, "marginRight": 12}),
+
+                # 학습 곡선
+                html.Div([
+                    html.H4("학습 곡선 (Val Accuracy)",
+                            style={"margin": "0 0 8px", "fontSize": 14, "color": "#2c3e50"}),
+                    dcc.Graph(id="train-curve-graph",
+                              config={"displayModeBar": False},
+                              figure=_make_train_curve()),
+                ], style={**CARD, "flex": 1}),
+            ], style={"display": "flex", "marginBottom": 0}),
+
+            # 행 2: 멀티홉 + 온라인 학습 + 위치 보정
+            html.Div([
+                # 멀티홉
+                html.Div([
+                    html.H4("멀티홉 Relay 연결 성공률",
+                            style={"margin": "0 0 8px", "fontSize": 14, "color": "#2c3e50"}),
+                    dcc.Graph(id="multihop-graph",
+                              config={"displayModeBar": False},
+                              figure=_make_multihop()),
+                ], style={**CARD, "flex": 2, "marginRight": 12}),
+
+                # 온라인 학습 + 위치 보정 (우측 2개)
+                html.Div([
+                    html.Div([
+                        html.H4("온라인 학습 적응 효과",
+                                style={"margin": "0 0 8px", "fontSize": 14, "color": "#2c3e50"}),
+                        dcc.Graph(id="online-graph",
+                                  config={"displayModeBar": False},
+                                  figure=_make_online()),
+                    ], style={**CARD}),
+
+                    html.Div([
+                        html.H4("위치 보정 성공률 개선",
+                                style={"margin": "0 0 8px", "fontSize": 14, "color": "#2c3e50"}),
+                        dcc.Graph(id="correction-graph",
+                                  config={"displayModeBar": False},
+                                  figure=_make_correction()),
+                    ], style={**CARD, "marginBottom": 0}),
+                ], style={"flex": 1, "display": "flex", "flexDirection": "column"}),
+            ], style={"display": "flex"}),
+
+        ], style={"padding": "16px 24px", "background": "#f5f6fa",
+                  "minHeight": "calc(100vh - 120px)"}),
+    ]),  # end Tab 2
+
+    ]),  # end Tabs
 
 ], style={"fontFamily": "sans-serif"})
 
