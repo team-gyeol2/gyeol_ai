@@ -23,12 +23,13 @@ from collections import defaultdict
 from pathlib import Path
 
 import dash
-from dash import Input, Output, State, callback, dcc, html, no_update
+from dash import Input, Output, State, callback, dcc, html, no_update, dash_table
 import plotly.graph_objects as go
 from collections import deque
 
-ROOT     = Path(__file__).resolve().parent
-DATA_DIR = ROOT / "ns-3.47" / "datasets" / "uav_2d_initial"
+ROOT      = Path(__file__).resolve().parent
+DATA_DIR  = ROOT / "ns-3.47" / "datasets" / "uav_2d_initial"
+DATA_DIR3 = ROOT / "ns-3.47" / "datasets" / "uav_3d"
 
 STATE_COLOR = {"healthy": "#27ae60", "degraded": "#e67e22", "disconnected": "#e74c3c"}
 UAV_NORMAL  = "#2980b9"
@@ -80,6 +81,54 @@ POSITIONS, LINKS = _load_all()
 SCENARIOS = sorted(POSITIONS.keys())
 OUT_DIR = ROOT / "models"
 print(f"시나리오 {len(SCENARIOS)}개 로딩 완료")
+
+# Initial buildings for the configurator DataTable
+BUILDINGS_INIT = [
+    {"id": b["id"], "x0": b["x0"], "x1": b["x1"],
+     "y0": b["y0"], "y1": b["y1"], "height": 30.0, "atten": b["atten"]}
+    for b in OBSTACLES
+]
+
+
+# ── 3D 데이터 로딩 ────────────────────────────────────────────────────────────
+
+def _load_3d_data() -> tuple[dict, dict, list, list]:
+    if not (DATA_DIR3 / "uav_positions_3d.csv").exists():
+        return {}, {}, [], []
+    obs3d: list[dict] = []
+    with open(DATA_DIR3 / "obstacles_3d.csv", encoding="utf-8") as f:
+        for r in csv.DictReader(f):
+            obs3d.append({
+                "id":    r["building_id"],
+                "x0":    float(r["x_min_m"]), "x1": float(r["x_max_m"]),
+                "y0":    float(r["y_min_m"]), "y1": float(r["y_max_m"]),
+                "height":float(r["height_m"]),
+                "atten": float(r["attenuation_db"]),
+            })
+    pos3d: dict[str, dict[str, dict[int, tuple]]] = defaultdict(lambda: defaultdict(dict))
+    with open(DATA_DIR3 / "uav_positions_3d.csv", encoding="utf-8") as f:
+        for r in csv.DictReader(f):
+            pos3d[r["scenario_id"]][r["time_s"]][int(r["uav_id"])] = (
+                float(r["x_m"]), float(r["y_m"]),
+                float(r["z_m"]), r.get("role", ""))
+    lnk3d: dict[str, dict[str, dict[tuple, dict]]] = defaultdict(lambda: defaultdict(dict))
+    with open(DATA_DIR3 / "link_metrics_3d.csv", encoding="utf-8") as f:
+        for r in csv.DictReader(f):
+            pair = (int(r["src_uav"]), int(r["dst_uav"]))
+            lnk3d[r["scenario_id"]][r["time_s"]][pair] = {
+                "state": r["link_state"],
+                "rssi":  float(r["rssi_dbm_est"]),
+                "plr":   float(r["plr_pct_est"]),
+                "relay": int(r["optimal_relay_uav"]),
+            }
+    scenarios3d = sorted(pos3d.keys())
+    return dict(pos3d), dict(lnk3d), scenarios3d, obs3d
+
+
+print("3D 데이터 로딩 중...")
+POSITIONS_3D, LINKS_3D, SCENARIOS_3D, OBSTACLES_3D = _load_3d_data()
+HAS_3D = bool(SCENARIOS_3D)
+print(f"3D 시나리오 {len(SCENARIOS_3D)}개 로딩 완료" if HAS_3D else "3D 데이터 없음")
 
 
 # ── 성능 지표 데이터 로딩 & 계산 ─────────────────────────────────────────────
@@ -355,14 +404,18 @@ def _centroid(pos: dict[int, tuple], ids: set[int]) -> tuple[float, float]:
 
 # ── 지도 Figure 생성 ─────────────────────────────────────────────────────────
 def make_figure(scenario: str, t_s: str,
-                prev_relay: int | None, bad_streak: int) -> go.Figure:
+                prev_relay: int | None, bad_streak: int,
+                buildings: list[dict] | None = None) -> go.Figure:
     pos  = POSITIONS.get(scenario, {}).get(t_s, {})
     lnks = LINKS.get(scenario, {}).get(t_s, {})
+
+    if buildings is None:
+        buildings = OBSTACLES
 
     traces = []
 
     # ── 건물 ────────────────────────────────────────────────────────────────
-    for b in OBSTACLES:
+    for b in buildings:
         xs = [b["x0"], b["x1"], b["x1"], b["x0"], b["x0"]]
         ys = [b["y0"], b["y0"], b["y1"], b["y1"], b["y0"]]
         traces.append(go.Scatter(
@@ -532,6 +585,134 @@ def make_figure(scenario: str, t_s: str,
     return fig
 
 
+# ── 3D Figure ────────────────────────────────────────────────────────────────
+
+def _building_box_traces(b: dict) -> list[go.Scatter3d]:
+    """Return Scatter3d wireframe traces for a 3D building box."""
+    x0, x1 = b["x0"], b["x1"]
+    y0, y1 = b["y0"], b["y1"]
+    h       = b.get("height", 30.0)
+
+    def _seg(pts):
+        xs = [p[0] for p in pts] + [None]
+        ys = [p[1] for p in pts] + [None]
+        zs = [p[2] for p in pts] + [None]
+        return xs, ys, zs
+
+    corners_bot = [(x0,y0,0),(x1,y0,0),(x1,y1,0),(x0,y1,0),(x0,y0,0)]
+    corners_top = [(x0,y0,h),(x1,y0,h),(x1,y1,h),(x0,y1,h),(x0,y0,h)]
+    verticals   = [(x0,y0,0),(x0,y0,h),(None,None,None),
+                   (x1,y0,0),(x1,y0,h),(None,None,None),
+                   (x1,y1,0),(x1,y1,h),(None,None,None),
+                   (x0,y1,0),(x0,y1,h)]
+
+    all_pts = corners_bot + [(None,None,None)] + corners_top + [(None,None,None)] + verticals
+    xs = [p[0] for p in all_pts]
+    ys = [p[1] for p in all_pts]
+    zs = [p[2] for p in all_pts]
+    return [go.Scatter3d(
+        x=xs, y=ys, z=zs,
+        mode="lines",
+        line=dict(color="rgba(100,100,100,0.55)", width=3),
+        hovertemplate=f"<b>{b['id']}</b><br>높이: {h}m<br>감쇠: {b['atten']}dB<extra></extra>",
+        name=f"{b['id']}",
+        legendgroup="buildings3d",
+        showlegend=True,
+    )]
+
+
+def make_figure_3d(scenario: str, t_s: str,
+                   prev_relay: int | None) -> go.Figure:
+    pos  = POSITIONS_3D.get(scenario, {}).get(t_s, {})
+    lnks = LINKS_3D.get(scenario, {}).get(t_s, {})
+
+    traces: list = []
+
+    # Buildings
+    for b in OBSTACLES_3D:
+        traces.extend(_building_box_traces(b))
+
+    # Links
+    for (src, dst), info in lnks.items():
+        if src not in pos or dst not in pos:
+            continue
+        x0, y0, z0, _ = pos[src]
+        x1, y1, z1, _ = pos[dst]
+        color = STATE_COLOR[info["state"]]
+        traces.append(go.Scatter3d(
+            x=[x0, x1], y=[y0, y1], z=[z0, z1],
+            mode="lines",
+            line=dict(color=color, width=4),
+            hovertemplate=(f"UAV{src}↔UAV{dst}<br>state: {info['state']}<br>"
+                           f"RSSI: {info['rssi']:.1f}dBm<extra></extra>"),
+            showlegend=False,
+        ))
+
+    # Current relay
+    relay_vals = [v["relay"] for v in lnks.values()]
+    cur_relay  = max(set(relay_vals), key=relay_vals.count) if relay_vals else None
+
+    # UAV nodes
+    for uid in sorted(pos):
+        x, y, z, role = pos[uid]
+        is_relay = (uid == cur_relay)
+        color  = UAV_RELAY if is_relay else UAV_NORMAL
+        symbol = "diamond" if is_relay else "circle"
+        size   = 12 if is_relay else 8
+        label  = f"UAV{uid}" + (" ⭐" if is_relay else "")
+        traces.append(go.Scatter3d(
+            x=[x], y=[y], z=[z],
+            mode="markers+text",
+            marker=dict(size=size, color=color, symbol=symbol,
+                        line=dict(color="white", width=1)),
+            text=[label],
+            textposition="top center",
+            textfont=dict(size=9, color="#2c3e50"),
+            hovertemplate=(f"<b>UAV{uid}</b><br>role: {role}<br>"
+                           f"({x:.1f}, {y:.1f}, {z:.1f}m)<extra></extra>"),
+            name=f"UAV{uid}",
+            showlegend=False,
+        ))
+
+    # Relay switch arrow
+    if (prev_relay is not None and cur_relay is not None
+            and prev_relay != cur_relay
+            and prev_relay in pos and cur_relay in pos):
+        px, py, pz, _ = pos[prev_relay]
+        nx, ny, nz, _ = pos[cur_relay]
+        traces.append(go.Scatter3d(
+            x=[px, (px+nx)/2, nx], y=[py, (py+ny)/2, ny], z=[pz, (pz+nz)/2+5, nz],
+            mode="lines",
+            line=dict(color="#f39c12", width=3, dash="dash"),
+            hoverinfo="skip", showlegend=False,
+        ))
+
+    all_x = [v[0] for d in POSITIONS_3D.get(scenario, {}).values() for v in d.values()]
+    all_y = [v[1] for d in POSITIONS_3D.get(scenario, {}).values() for v in d.values()]
+    all_z = [v[2] for d in POSITIONS_3D.get(scenario, {}).values() for v in d.values()]
+    pad = 20
+
+    fig = go.Figure(data=traces)
+    fig.update_layout(
+        margin=dict(l=0, r=0, t=0, b=0),
+        scene=dict(
+            xaxis=dict(title="X (m)", range=[min(all_x)-pad, max(all_x)+pad],
+                       backgroundcolor="#f8f9fa", gridcolor="#ddd"),
+            yaxis=dict(title="Y (m)", range=[min(all_y)-pad, max(all_y)+pad],
+                       backgroundcolor="#f8f9fa", gridcolor="#ddd"),
+            zaxis=dict(title="Z / 고도 (m)", range=[0, max(all_z)+pad],
+                       backgroundcolor="#eef2ff", gridcolor="#ddd"),
+            bgcolor="#f8f9fa",
+            camera=dict(eye=dict(x=1.4, y=-1.4, z=0.9)),
+        ),
+        paper_bgcolor="white",
+        height=500,
+        legend=dict(x=1.01, y=1, bgcolor="rgba(255,255,255,0.9)",
+                    bordercolor="#ccc", borderwidth=1),
+    )
+    return fig
+
+
 # ── 앱 ───────────────────────────────────────────────────────────────────────
 app = dash.Dash(__name__, title="UAV 통신 대시보드")
 
@@ -542,7 +723,10 @@ app.layout = html.Div([
     dcc.Store(id="frame-store", data=0),
     dcc.Store(id="prev-relay-store", data=None),
     dcc.Store(id="bad-streak-store", data=0),
+    dcc.Store(id="frame-store-3d", data=0),
+    dcc.Store(id="prev-relay-store-3d", data=None),
     dcc.Interval(id="interval", interval=600, n_intervals=0, disabled=True),
+    dcc.Interval(id="interval-3d", interval=600, n_intervals=0, disabled=True),
 
     # ── 헤더 ─────────────────────────────────────────────────────────────────
     html.Div([
@@ -628,7 +812,7 @@ app.layout = html.Div([
                 html.H4("Relay 전환 이력", style={"margin": "0 0 8px", "fontSize": 13,
                                                   "color": "#e67e22"}),
                 html.Div(id="relay-log",
-                         style={"maxHeight": 160, "overflowY": "auto",
+                         style={"maxHeight": 130, "overflowY": "auto",
                                 "fontSize": 12}),
             ], style={"background": "white", "borderRadius": 8, "padding": 12,
                       "marginBottom": 12, "boxShadow": "0 1px 4px rgba(0,0,0,.1)"}),
@@ -638,7 +822,7 @@ app.layout = html.Div([
                 html.H4("위치 보정 이력", style={"margin": "0 0 8px", "fontSize": 13,
                                                "color": "#8e44ad"}),
                 html.Div(id="correction-log",
-                         style={"maxHeight": 140, "overflowY": "auto",
+                         style={"maxHeight": 110, "overflowY": "auto",
                                 "fontSize": 12}),
             ], style={"background": "white", "borderRadius": 8, "padding": 12,
                       "marginBottom": 12, "boxShadow": "0 1px 4px rgba(0,0,0,.1)"}),
@@ -658,8 +842,57 @@ app.layout = html.Div([
                 html.Div("🔀 Relay 전환 화살표", style={"color":"#e67e22","fontSize": 11}),
                 html.Div("……▶ 위치 보정 방향", style={"color":UAV_ISOLATED,"fontSize":11}),
             ], style={"background": "white", "borderRadius": 8, "padding": 12,
+                      "marginBottom": 12, "boxShadow": "0 1px 4px rgba(0,0,0,.1)"}),
+
+            # ── 건물 설정 ─────────────────────────────────────────────────────
+            html.Div([
+                html.Div([
+                    html.H4("🏢 건물 설정",
+                            style={"margin": "0 0 4px", "fontSize": 13, "color": "#2c3e50",
+                                   "display": "inline-block"}),
+                    html.Span("(시각화 전용)",
+                              style={"fontSize": 10, "color": "#999", "marginLeft": 6}),
+                ]),
+                dash_table.DataTable(
+                    id="building-table",
+                    columns=[
+                        {"name": "ID",      "id": "id",     "editable": False},
+                        {"name": "X min",   "id": "x0",     "editable": True, "type": "numeric"},
+                        {"name": "X max",   "id": "x1",     "editable": True, "type": "numeric"},
+                        {"name": "Y min",   "id": "y0",     "editable": True, "type": "numeric"},
+                        {"name": "Y max",   "id": "y1",     "editable": True, "type": "numeric"},
+                        {"name": "H (m)",   "id": "height", "editable": True, "type": "numeric"},
+                        {"name": "Att(dB)", "id": "atten",  "editable": True, "type": "numeric"},
+                    ],
+                    data=BUILDINGS_INIT,
+                    editable=True,
+                    row_deletable=True,
+                    style_table={"overflowX": "auto"},
+                    style_header={"backgroundColor": "#ecf0f1", "fontWeight": "bold",
+                                  "fontSize": 11, "padding": "4px 6px"},
+                    style_cell={"fontSize": 11, "padding": "3px 5px",
+                                "minWidth": 40, "maxWidth": 60},
+                    style_data_conditional=[{
+                        "if": {"row_index": "odd"},
+                        "backgroundColor": "#f8f9fa",
+                    }],
+                ),
+                html.Button("+ 건물 추가", id="add-building-btn", n_clicks=0,
+                            style={"marginTop": 6, "padding": "4px 12px",
+                                   "background": "#3498db", "color": "white",
+                                   "border": "none", "borderRadius": 4,
+                                   "cursor": "pointer", "fontSize": 12}),
+                html.Button("↺ 초기화", id="reset-building-btn", n_clicks=0,
+                            style={"marginTop": 6, "marginLeft": 6,
+                                   "padding": "4px 12px",
+                                   "background": "#95a5a6", "color": "white",
+                                   "border": "none", "borderRadius": 4,
+                                   "cursor": "pointer", "fontSize": 12}),
+            ], style={"background": "white", "borderRadius": 8, "padding": 12,
                       "boxShadow": "0 1px 4px rgba(0,0,0,.1)"}),
-        ], style={"flex": "1.2", "display": "flex", "flexDirection": "column"}),
+
+        ], style={"flex": "1.2", "display": "flex", "flexDirection": "column",
+                  "overflowY": "auto", "maxHeight": "calc(100vh - 150px)"}),
 
     ], style={"display": "flex", "padding": "14px 24px",
               "background": "#f5f6fa", "minHeight": "calc(100vh - 150px)"}),
@@ -727,6 +960,115 @@ app.layout = html.Div([
         ], style={"padding": "16px 24px", "background": "#f5f6fa",
                   "minHeight": "calc(100vh - 120px)"}),
     ]),  # end Tab 2
+
+    # ════════════════════════════════════════════════════════════════════════
+    # TAB 3: 3D 시뮬레이션
+    # ════════════════════════════════════════════════════════════════════════
+    dcc.Tab(label="🌐 3D 시뮬레이션", value="tab-3d", children=[
+
+    html.Div([
+        html.Div([
+            html.Label("시나리오 (3D)", style={"fontSize": 12, "fontWeight": "bold"}),
+            dcc.Dropdown(
+                id="scenario-dd-3d", clearable=False,
+                options=[{"label": s, "value": s} for s in SCENARIOS_3D],
+                value=SCENARIOS_3D[0] if SCENARIOS_3D else None,
+                style={"fontSize": 13, "width": 260},
+            ),
+        ]),
+        html.Div([
+            html.Label("재생 속도", style={"fontSize": 12, "fontWeight": "bold"}),
+            dcc.Slider(id="speed-slider-3d", min=1, max=5, step=1, value=2,
+                       marks={1:"느림", 3:"보통", 5:"빠름"},
+                       tooltip={"placement": "bottom"}, updatemode="drag"),
+        ], style={"width": 200, "marginLeft": 20}),
+        html.Div([
+            html.Button("▶ Play", id="play-btn-3d", n_clicks=0,
+                        style={"marginRight": 8, "padding": "6px 18px",
+                               "background": "#27ae60", "color": "white",
+                               "border": "none", "borderRadius": 4,
+                               "cursor": "pointer", "fontSize": 14}),
+            html.Button("⏸ Pause", id="pause-btn-3d", n_clicks=0,
+                        style={"padding": "6px 18px",
+                               "background": "#e74c3c", "color": "white",
+                               "border": "none", "borderRadius": 4,
+                               "cursor": "pointer", "fontSize": 14}),
+        ], style={"marginLeft": 20, "alignSelf": "flex-end"}),
+        html.Div(id="time-label-3d",
+                 style={"marginLeft": 20, "alignSelf": "flex-end",
+                        "fontSize": 13, "color": "#555", "minWidth": 140}),
+    ], style={"display": "flex", "alignItems": "flex-end", "gap": 0,
+              "padding": "14px 24px", "background": "#ecf0f1",
+              "borderBottom": "1px solid #ddd"}),
+
+    html.Div([
+        dcc.Slider(id="frame-slider-3d", min=0, max=1, step=1, value=0,
+                   marks={}, updatemode="drag",
+                   tooltip={"placement": "bottom", "always_visible": False}),
+    ], style={"padding": "8px 24px", "background": "#ecf0f1",
+              "borderBottom": "1px solid #ddd"}),
+
+    html.Div([
+        # 3D 지도
+        html.Div([
+            dcc.Graph(id="map-graph-3d", config={"displayModeBar": True}),
+        ], style={"flex": "3", "background": "white", "borderRadius": 8,
+                  "padding": 12, "marginRight": 12,
+                  "boxShadow": "0 1px 4px rgba(0,0,0,.1)"}),
+
+        # 3D 사이드 패널
+        html.Div([
+            html.Div([
+                html.H4("링크 상태 (3D)", style={"margin": "0 0 8px", "fontSize": 13,
+                                               "color": "#2c3e50"}),
+                html.Div(id="state-summary-3d"),
+            ], style={"background": "white", "borderRadius": 8, "padding": 12,
+                      "marginBottom": 12, "boxShadow": "0 1px 4px rgba(0,0,0,.1)"}),
+
+            html.Div([
+                html.H4("Relay 전환 이력", style={"margin": "0 0 8px", "fontSize": 13,
+                                                  "color": "#e67e22"}),
+                html.Div(id="relay-log-3d",
+                         style={"maxHeight": 130, "overflowY": "auto", "fontSize": 12}),
+            ], style={"background": "white", "borderRadius": 8, "padding": 12,
+                      "marginBottom": 12, "boxShadow": "0 1px 4px rgba(0,0,0,.1)"}),
+
+            # 3D 안내
+            html.Div([
+                html.Div("💡 3D 조작법", style={"fontWeight": "bold", "fontSize": 11,
+                                               "marginBottom": 6}),
+                html.Div("• 마우스 드래그: 회전", style={"fontSize": 11, "color": "#555"}),
+                html.Div("• 스크롤: 확대/축소", style={"fontSize": 11, "color": "#555"}),
+                html.Div("• 더블클릭: 뷰 초기화", style={"fontSize": 11, "color": "#555"}),
+                html.Div("", style={"height": 8}),
+                html.Div("건물 색상 의미", style={"fontWeight": "bold", "fontSize": 11,
+                                               "marginBottom": 4}),
+                html.Div("━ 회색 박스: 3D 건물 (높이 포함)",
+                         style={"fontSize": 11, "color": "#888"}),
+                html.Div("", style={"height": 8}),
+                html.Div("링크 색상", style={"fontWeight": "bold", "fontSize": 11,
+                                           "marginBottom": 4}),
+                *[html.Div([
+                    html.Span("━━", style={"color": STATE_COLOR[s], "marginRight": 6}),
+                    html.Span(s, style={"fontSize": 11}),
+                ]) for s in ["healthy", "degraded", "disconnected"]],
+            ], style={"background": "white", "borderRadius": 8, "padding": 12,
+                      "boxShadow": "0 1px 4px rgba(0,0,0,.1)"}),
+
+        ], style={"flex": "1.2", "display": "flex", "flexDirection": "column"}),
+    ], style={"display": "flex", "padding": "14px 24px",
+              "background": "#f5f6fa", "minHeight": "calc(100vh - 150px)"}),
+
+    ] if HAS_3D else [
+        html.Div([
+            html.Div("🌐 3D 데이터가 없습니다.",
+                     style={"fontSize": 18, "color": "#999", "textAlign": "center",
+                            "marginTop": 60}),
+            html.Div("generate_uav_3d_dataset.py 를 실행하면 3D 탭이 활성화됩니다.",
+                     style={"fontSize": 13, "color": "#bbb", "textAlign": "center",
+                            "marginTop": 12}),
+        ], style={"padding": 40}),
+    ]),  # end Tab 3
 
     ]),  # end Tabs
 
@@ -825,15 +1167,16 @@ def slider_moved(slider_val, scenario):
     Output("correction-log",  "children"),
     Input("frame-store",      "data"),
     Input("scenario-dd",      "value"),
+    Input("building-table",   "data"),
     State("prev-relay-store", "data"),
     State("bad-streak-store", "data"),
 )
-def update_view(frame_idx, scenario, prev_relay, bad_streak):
+def update_view(frame_idx, scenario, buildings, prev_relay, bad_streak):
     ts  = get_ts(scenario)
     idx = min(frame_idx, len(ts) - 1)
     t_s = ts[idx]
 
-    fig = make_figure(scenario, t_s, prev_relay, bad_streak)
+    fig = make_figure(scenario, t_s, prev_relay, bad_streak, buildings=buildings)
 
     time_label = f"t = {float(t_s):.2f}s  ({idx+1}/{len(ts)})"
 
@@ -887,6 +1230,155 @@ def update_view(frame_idx, scenario, prev_relay, bad_streak):
         html.Span("보정 없음", style={"color": "#999", "fontSize": 11})]
 
     return fig, time_label, state_summary, relay_log, correction_log
+
+
+# ── 건물 설정 콜백 ────────────────────────────────────────────────────────────
+
+@callback(
+    Output("building-table", "data"),
+    Input("add-building-btn",   "n_clicks"),
+    Input("reset-building-btn", "n_clicks"),
+    State("building-table",     "data"),
+    prevent_initial_call=True,
+)
+def manage_buildings(add_n, reset_n, current_data):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return no_update
+    btn = ctx.triggered[0]["prop_id"].split(".")[0]
+    if btn == "reset-building-btn":
+        return BUILDINGS_INIT
+    # add-building-btn
+    new_id = f"B{len(current_data)}"
+    new_row = {"id": new_id, "x0": 100.0, "x1": 120.0,
+               "y0": 55.0, "y1": 65.0, "height": 30.0, "atten": 6.0}
+    return (current_data or []) + [new_row]
+
+
+# ── 3D 탭 콜백 ───────────────────────────────────────────────────────────────
+
+if HAS_3D:
+    def get_ts_3d(scenario: str) -> list[str]:
+        return sorted(POSITIONS_3D.get(scenario, {}).keys(), key=float)
+
+    @callback(
+        Output("frame-slider-3d", "max"),
+        Output("frame-slider-3d", "marks"),
+        Output("frame-slider-3d", "value"),
+        Output("frame-store-3d",  "data"),
+        Output("prev-relay-store-3d", "data"),
+        Input("scenario-dd-3d",   "value"),
+    )
+    def reset_on_scenario_3d(scenario):
+        ts = get_ts_3d(scenario)
+        n  = len(ts) - 1
+        step = max(1, n // 12)
+        marks = {i: f"{float(ts[i]):.0f}s" for i in range(0, n+1, step)}
+        return n, marks, 0, 0, None
+
+    @callback(
+        Output("interval-3d", "disabled"),
+        Output("interval-3d", "interval"),
+        Input("play-btn-3d",    "n_clicks"),
+        Input("pause-btn-3d",   "n_clicks"),
+        Input("speed-slider-3d","value"),
+        State("interval-3d",    "disabled"),
+    )
+    def toggle_play_3d(play_n, pause_n, speed, is_disabled):
+        ctx = dash.callback_context
+        if not ctx.triggered:
+            return True, 600
+        btn = ctx.triggered[0]["prop_id"].split(".")[0]
+        interval_ms = max(100, 600 - (speed - 1) * 120)
+        if btn == "play-btn-3d":
+            return False, interval_ms
+        if btn == "pause-btn-3d":
+            return True, interval_ms
+        return is_disabled, interval_ms
+
+    @callback(
+        Output("frame-store-3d",      "data",    allow_duplicate=True),
+        Output("frame-slider-3d",     "value",   allow_duplicate=True),
+        Output("prev-relay-store-3d", "data",    allow_duplicate=True),
+        Input("interval-3d",          "n_intervals"),
+        State("frame-store-3d",       "data"),
+        State("scenario-dd-3d",       "value"),
+        State("prev-relay-store-3d",  "data"),
+        prevent_initial_call=True,
+    )
+    def advance_frame_3d(n, frame_idx, scenario, prev_relay):
+        ts  = get_ts_3d(scenario)
+        nxt = (frame_idx + 1) % len(ts)
+        t_s = ts[nxt]
+        lnks = LINKS_3D.get(scenario, {}).get(t_s, {})
+        relay_vals = [v["relay"] for v in lnks.values()]
+        cur_relay  = max(set(relay_vals), key=relay_vals.count) if relay_vals else prev_relay
+        return nxt, nxt, cur_relay
+
+    @callback(
+        Output("frame-store-3d",      "data",    allow_duplicate=True),
+        Output("prev-relay-store-3d", "data",    allow_duplicate=True),
+        Input("frame-slider-3d",      "value"),
+        State("scenario-dd-3d",       "value"),
+        prevent_initial_call=True,
+    )
+    def slider_moved_3d(slider_val, scenario):
+        ts  = get_ts_3d(scenario)
+        t_s = ts[min(slider_val, len(ts)-1)]
+        lnks = LINKS_3D.get(scenario, {}).get(t_s, {})
+        relay_vals = [v["relay"] for v in lnks.values()]
+        cur_relay  = max(set(relay_vals), key=relay_vals.count) if relay_vals else None
+        return slider_val, cur_relay
+
+    @callback(
+        Output("map-graph-3d",       "figure"),
+        Output("time-label-3d",      "children"),
+        Output("state-summary-3d",   "children"),
+        Output("relay-log-3d",       "children"),
+        Input("frame-store-3d",      "data"),
+        Input("scenario-dd-3d",      "value"),
+        State("prev-relay-store-3d", "data"),
+    )
+    def update_view_3d(frame_idx, scenario, prev_relay):
+        ts  = get_ts_3d(scenario)
+        idx = min(frame_idx, len(ts) - 1)
+        t_s = ts[idx]
+
+        fig = make_figure_3d(scenario, t_s, prev_relay)
+
+        time_label = f"t = {float(t_s):.2f}s  ({idx+1}/{len(ts)})"
+
+        lnks = LINKS_3D.get(scenario, {}).get(t_s, {})
+        cnt  = {"healthy": 0, "degraded": 0, "disconnected": 0}
+        for v in lnks.values():
+            if v["state"] in cnt:
+                cnt[v["state"]] += 1
+        state_summary = [
+            html.Div([
+                html.Span("●", style={"color": STATE_COLOR[s], "fontSize": 18,
+                                       "marginRight": 6}),
+                html.Span(f"{s}: {cnt[s]}건", style={"fontSize": 12}),
+            ], style={"marginBottom": 4})
+            for s in ["healthy", "degraded", "disconnected"]
+        ]
+
+        relay_events = []
+        prev_r = None
+        for t in ts[:idx+1]:
+            lk = LINKS_3D.get(scenario, {}).get(t, {})
+            rv = [v["relay"] for v in lk.values()]
+            cur = max(set(rv), key=rv.count) if rv else None
+            if prev_r is not None and cur != prev_r:
+                relay_events.append(
+                    html.Div(f"t={float(t):.1f}s  UAV{prev_r}→UAV{cur}",
+                             style={"color": "#e67e22",
+                                    "borderBottom": "1px solid #fde",
+                                    "padding": "2px 0"}))
+            prev_r = cur
+        relay_log = relay_events[-8:] if relay_events else [
+            html.Span("전환 없음", style={"color": "#999", "fontSize": 11})]
+
+        return fig, time_label, state_summary, relay_log
 
 
 if __name__ == "__main__":

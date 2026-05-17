@@ -1,0 +1,4 @@
+building_id,x_min_m,x_max_m,y_min_m,y_max_m,height_m,attenuation_db,note
+B0,88.0,100.0,52.0,58.0,30.0,6.0,Mid-map lower corridor obstacle; blocks UAVs below 30m altitude.
+B1,118.0,132.0,62.0,68.0,40.0,6.0,"Upper corridor obstacle; tallest building, blocks UAVs below 40m."
+B2,146.0,160.0,50.0,56.0,25.0,6.0,Late-stage lower corridor; blocks UAVs below 25m altitude.
