@@ -649,6 +649,56 @@ def _make_rl_history():
     return fig
 
 
+def _make_ppo_comparison():
+    """PPO vs Heuristic vs Rule-based 릴레이 선택 비교 차트."""
+    path = OUT_DIR / "ppo_relay_results.json"
+    if not path.exists():
+        return go.Figure().update_layout(
+            annotations=[dict(text="ppo_relay_results.json 없음 — rl_relay_agent.py 먼저 실행",
+                              showarrow=False, font=dict(size=13, color="#aaa"),
+                              xref="paper", yref="paper", x=0.5, y=0.5)])
+
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+
+    results = data.get("results", {})
+    max_pairs = data.get("max_pairs", 10)
+    names = list(results.keys())
+    conn  = [results[n]["avg_connected_pairs"] for n in names]
+    conn_pct = [c / max_pairs * 100 for c in conn]
+    switches = [results[n]["avg_switches_per_ep"] for n in names]
+    rewards  = [results[n]["avg_reward"] for n in names]
+    colors   = ["#2980b9", "#e67e22", "#27ae60"]
+
+    fig = go.Figure()
+    # 연결률 막대 (왼쪽 y축)
+    fig.add_trace(go.Bar(
+        name="연결률 (%)", x=names, y=conn_pct,
+        marker_color=colors, opacity=0.85,
+        text=[f"{v:.1f}%" for v in conn_pct], textposition="outside",
+        yaxis="y1",
+    ))
+    # 릴레이 전환 횟수 (오른쪽 y축)
+    fig.add_trace(go.Scatter(
+        name="릴레이 전환 (회)", x=names, y=switches,
+        mode="markers+lines",
+        marker=dict(size=10, color="#8e44ad"),
+        line=dict(color="#8e44ad", width=2, dash="dot"),
+        yaxis="y2",
+    ))
+    fig.update_layout(
+        margin=dict(l=50, r=60, t=30, b=40),
+        yaxis=dict(title="평균 연결률 (%)", range=[0, 100], gridcolor="#eee"),
+        yaxis2=dict(title="릴레이 전환 (회/에피소드)", overlaying="y", side="right",
+                    range=[0, max(switches) * 1.5 or 1], gridcolor=None),
+        xaxis=dict(title="전략"),
+        plot_bgcolor="white", paper_bgcolor="white",
+        legend=dict(orientation="h", y=1.12),
+        barmode="group",
+    )
+    return fig
+
+
 def get_ts(scenario: str) -> list[str]:
     return sorted(POSITIONS.get(scenario, {}).keys(), key=float)
 
@@ -1878,6 +1928,17 @@ app.layout = html.Div([
                               figure=_make_rl_history()),
                 ], style={**CARD, "flex": 1, "marginBottom": 0}),
             ], style={"display": "flex"}),
+
+            # 행 4: PPO vs Heuristic vs Rule-based
+            html.Div([
+                html.Div([
+                    html.H4("릴레이 선택 전략 비교 (PPO vs Heuristic vs Rule-based)",
+                            style={"margin": "0 0 8px", "fontSize": 14, "color": "#2c3e50"}),
+                    dcc.Graph(id="ppo-compare-graph",
+                              config={"displayModeBar": False},
+                              figure=_make_ppo_comparison()),
+                ], style={**CARD, "marginBottom": 0}),
+            ], style={"marginTop": 16}),
 
         ], style={"padding": "16px 24px", "background": "#f5f6fa",
                   "minHeight": "calc(100vh - 120px)"}),

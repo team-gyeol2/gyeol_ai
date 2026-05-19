@@ -1,0 +1,21 @@
+{
+  "n_episodes": 1000,
+  "max_pairs": 10,
+  "results": {
+    "PPO (RL)": {
+      "avg_connected_pairs": 7.006,
+      "avg_switches_per_ep": 0.32,
+      "avg_reward": 6.992
+    },
+    "Heuristic": {
+      "avg_connected_pairs": 6.459,
+      "avg_switches_per_ep": 3.66,
+      "avg_reward": 6.397
+    },
+    "Rule-based": {
+      "avg_connected_pairs": 7.036,
+      "avg_switches_per_ep": 0.8,
+      "avg_reward": 7.023
+    }
+  }
+}
