@@ -1371,6 +1371,7 @@ app.layout = html.Div([
     dcc.Store(id="prev-relay-store-real", data=None),
     dcc.Store(id="bad-streak-store-real", data=0),
     dcc.Interval(id="interval-real", interval=600, n_intervals=0, disabled=True),
+    dcc.Interval(id="ns3-interval", interval=2000, n_intervals=0),
 
     # ── 헤더 ─────────────────────────────────────────────────────────────────
     html.Div([
@@ -1880,7 +1881,48 @@ app.layout = html.Div([
 
         ], style={"padding": "16px 24px", "background": "#f5f6fa",
                   "minHeight": "calc(100vh - 120px)"}),
-    ]),  # end Tab 3
+    ]),  # end 성능 지표 Tab
+
+    # ════════════════════════════════════════════════════════════════════════
+    # TAB 5: NS-3 실시간 연동
+    # ════════════════════════════════════════════════════════════════════════
+    dcc.Tab(label="NS-3 실시간 연동", value="tab-ns3", children=[
+        html.Div([
+
+            # 상단 상태 카드
+            html.Div(id="ns3-status-card", style={"marginBottom": 16}),
+
+            # 행 1: 릴레이 타임라인 + 지연 시간
+            html.Div([
+                html.Div([
+                    html.H4("릴레이 노드 선택 타임라인",
+                            style={"margin": "0 0 8px", "fontSize": 14, "color": "#2c3e50"}),
+                    dcc.Graph(id="ns3-relay-graph",
+                              config={"displayModeBar": False},
+                              style={"height": 260}),
+                ], style={**CARD, "flex": 1, "marginRight": 12}),
+
+                html.Div([
+                    html.H4("ML 서버 응답 지연 (ms)",
+                            style={"margin": "0 0 8px", "fontSize": 14, "color": "#2c3e50"}),
+                    dcc.Graph(id="ns3-latency-graph",
+                              config={"displayModeBar": False},
+                              style={"height": 260}),
+                ], style={**CARD, "flex": 1}),
+            ], style={"display": "flex", "marginBottom": 16}),
+
+            # 행 2: 위치 보정 이력
+            html.Div([
+                html.H4("DQN 위치 보정 이력",
+                        style={"margin": "0 0 8px", "fontSize": 14, "color": "#2c3e50"}),
+                dcc.Graph(id="ns3-correction-graph",
+                          config={"displayModeBar": False},
+                          style={"height": 240}),
+            ], style={**CARD, "marginBottom": 0}),
+
+        ], style={"padding": "16px 24px", "background": "#f5f6fa",
+                  "minHeight": "calc(100vh - 120px)"}),
+    ]),  # end NS-3 Tab
 
     ]),  # end Tabs
 
@@ -2369,6 +2411,165 @@ if HAS_3D:
             html.Span("전환 없음", style={"color": "#999", "fontSize": 11})]
 
         return fig, time_label, state_summary, relay_log
+
+
+# ── NS-3 실시간 연동 콜백 ─────────────────────────────────────────────────────
+_NS3_ML_CSV = ROOT / "ns-3.47" / "uav-ml.csv"
+
+
+def _read_ns3_log() -> list[dict]:
+    """uav-ml.csv를 읽어 레코드 리스트 반환. 파일 없으면 빈 리스트."""
+    rows = []
+    if not _NS3_ML_CSV.exists():
+        return rows
+    try:
+        with open(_NS3_ML_CSV, encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                try:
+                    rows.append({
+                        "t":       float(row["time_s"]),
+                        "lat":     float(row["latency_ms"]),
+                        "relay":   int(row["relay_id"]) if row["relay_id"].strip() not in ("-1", "offline", "") else -1,
+                        "resp":    row.get("response", ""),
+                    })
+                except (ValueError, KeyError):
+                    pass
+    except Exception:
+        pass
+    return rows
+
+
+@callback(
+    Output("ns3-status-card",     "children"),
+    Output("ns3-relay-graph",     "figure"),
+    Output("ns3-latency-graph",   "figure"),
+    Output("ns3-correction-graph","figure"),
+    Input("ns3-interval",         "n_intervals"),
+)
+def update_ns3_tab(_):
+    rows = _read_ns3_log()
+
+    # ── 상태 카드 ──────────────────────────────────────────────────────────
+    if not rows:
+        card = html.Div(
+            "uav-ml.csv 없음 — NS-3와 ML 서버를 함께 실행하면 데이터가 표시됩니다.",
+            style={"background": "#fff3cd", "border": "1px solid #ffc107",
+                   "borderRadius": 6, "padding": "10px 16px",
+                   "color": "#856404", "fontSize": 13},
+        )
+        empty = go.Figure().update_layout(
+            paper_bgcolor="#f9f9f9", plot_bgcolor="#f9f9f9",
+            margin=dict(l=30, r=20, t=20, b=30),
+            annotations=[dict(text="데이터 없음", showarrow=False,
+                              font=dict(size=14, color="#aaa"),
+                              xref="paper", yref="paper", x=0.5, y=0.5)],
+        )
+        return card, empty, empty, empty
+
+    online = [r for r in rows if r["relay"] >= 0]
+    corr_rows = []
+    for r in online:
+        try:
+            d = json.loads(r["resp"].strip().strip('"').replace('""', '"'))
+            if d.get("correction"):
+                corr_rows.append({**r, **d["correction"]})
+        except Exception:
+            pass
+
+    total   = len(online)
+    avg_lat = sum(r["lat"] for r in online) / total if total else 0
+    max_lat = max((r["lat"] for r in online), default=0)
+    n_corr  = len(corr_rows)
+
+    stat_style = {"background": "#fff", "borderRadius": 8,
+                  "padding": "10px 20px", "boxShadow": "0 1px 4px rgba(0,0,0,.1)",
+                  "textAlign": "center", "flex": 1, "marginRight": 12}
+    card = html.Div([
+        html.Div([html.Div(str(total), style={"fontSize": 26, "fontWeight": "bold", "color": "#2980b9"}),
+                  html.Div("총 요청 수", style={"fontSize": 12, "color": "#7f8c8d"})], style=stat_style),
+        html.Div([html.Div(f"{avg_lat:.2f} ms", style={"fontSize": 26, "fontWeight": "bold", "color": "#27ae60"}),
+                  html.Div("평균 지연", style={"fontSize": 12, "color": "#7f8c8d"})], style=stat_style),
+        html.Div([html.Div(f"{max_lat:.2f} ms", style={"fontSize": 26, "fontWeight": "bold", "color": "#e67e22"}),
+                  html.Div("최대 지연", style={"fontSize": 12, "color": "#7f8c8d"})], style=stat_style),
+        html.Div([html.Div(str(n_corr), style={"fontSize": 26, "fontWeight": "bold", "color": "#8e44ad"}),
+                  html.Div("DQN 위치 보정 횟수", style={"fontSize": 12, "color": "#7f8c8d"})],
+                 style={**stat_style, "marginRight": 0}),
+    ], style={"display": "flex"})
+
+    ts     = [r["t"]    for r in online]
+    relays = [r["relay"] for r in online]
+    lats   = [r["lat"]   for r in online]
+
+    # ── 릴레이 타임라인 ────────────────────────────────────────────────────
+    relay_fig = go.Figure()
+    relay_fig.add_trace(go.Scatter(
+        x=ts, y=relays, mode="lines+markers",
+        line=dict(color="#2980b9", width=2),
+        marker=dict(size=7),
+        name="릴레이 ID",
+    ))
+    relay_fig.update_layout(
+        margin=dict(l=40, r=20, t=10, b=30),
+        xaxis=dict(title="시뮬레이션 시간 (s)", gridcolor="#eee"),
+        yaxis=dict(title="릴레이 UAV ID", dtick=1,
+                   tickvals=list(range(5)),
+                   ticktext=[f"UAV{i}" for i in range(5)],
+                   gridcolor="#eee"),
+        plot_bgcolor="white", paper_bgcolor="white",
+    )
+
+    # ── 지연 시간 ──────────────────────────────────────────────────────────
+    lat_fig = go.Figure()
+    lat_fig.add_trace(go.Scatter(
+        x=ts, y=lats, mode="lines+markers",
+        line=dict(color="#27ae60", width=2),
+        marker=dict(size=6),
+        name="지연 (ms)",
+        fill="tozeroy", fillcolor="rgba(39,174,96,0.08)",
+    ))
+    lat_fig.add_hline(y=500, line_dash="dot", line_color="#e74c3c",
+                      annotation_text="목표 500ms", annotation_position="top left")
+    lat_fig.update_layout(
+        margin=dict(l=40, r=20, t=10, b=30),
+        xaxis=dict(title="시뮬레이션 시간 (s)", gridcolor="#eee"),
+        yaxis=dict(title="응답 지연 (ms)", gridcolor="#eee"),
+        plot_bgcolor="white", paper_bgcolor="white",
+    )
+
+    # ── 위치 보정 이력 ─────────────────────────────────────────────────────
+    corr_fig = go.Figure()
+    if corr_rows:
+        corr_ts  = [r["t"] for r in corr_rows]
+        corr_uid = [r["uav_id"] for r in corr_rows]
+        corr_dx  = [r["dx"] for r in corr_rows]
+        corr_dy  = [r["dy"] for r in corr_rows]
+        corr_mag = [math.hypot(dx, dy) for dx, dy in zip(corr_dx, corr_dy)]
+
+        corr_fig.add_trace(go.Bar(
+            x=corr_ts, y=corr_mag,
+            marker_color=[f"hsl({uid * 60}, 70%, 55%)" for uid in corr_uid],
+            text=[f"UAV{uid}<br>({dx:.1f},{dy:.1f})"
+                  for uid, dx, dy in zip(corr_uid, corr_dx, corr_dy)],
+            textposition="auto",
+            name="보정 크기 (m)",
+        ))
+        corr_fig.update_layout(
+            margin=dict(l=40, r=20, t=10, b=30),
+            xaxis=dict(title="시뮬레이션 시간 (s)", gridcolor="#eee"),
+            yaxis=dict(title="이동 거리 (m)", gridcolor="#eee"),
+            plot_bgcolor="white", paper_bgcolor="white",
+        )
+    else:
+        corr_fig.update_layout(
+            margin=dict(l=40, r=20, t=10, b=30),
+            paper_bgcolor="white", plot_bgcolor="white",
+            annotations=[dict(text="보정 없음 (모든 링크 정상)", showarrow=False,
+                              font=dict(size=13, color="#27ae60"),
+                              xref="paper", yref="paper", x=0.5, y=0.5)],
+        )
+
+    return card, relay_fig, lat_fig, corr_fig
 
 
 if __name__ == "__main__":

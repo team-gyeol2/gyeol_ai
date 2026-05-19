@@ -1,10 +1,11 @@
 """
 ml_server.py — NS-3 실시간 ML 연동 TCP 서버
-NS-3가 1초마다 UAV 상태 JSON을 전송 → 릴레이 노드 선택 + 위치 보정 반환
+NS-3가 1초마다 UAV 상태 JSON 전송 → 릴레이 노드 선택 + DQN 위치 보정 반환
 """
 
 import json
 import math
+import os
 import socket
 import sys
 import threading
@@ -12,117 +13,211 @@ import time
 from collections import deque
 from typing import Optional
 
+# ── PyTorch / DQN 로딩 ───────────────────────────────────────────────────────
+_TORCH_OK = False
+_dqn_model = None
+try:
+    import numpy as np
+    import torch
+    import torch.nn as nn
+    _TORCH_OK = True
+except ImportError:
+    pass
+
+# DQN 학습 때와 동일한 상수
+COMM_RANGE  = 160.0
+RSSI_THRESH = -90.0
+TX_POWER    = -20.0
+FREQ_MHZ    = 2400.0
+DIRECTIONS  = [i * (math.pi / 4) for i in range(8)]
+STEP_SIZES  = [10.0, 20.0, 30.0, 40.0]
+MAX_STEPS   = 20
+
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "models", "rl_correction_dqn.pt")
+
+
+def _load_dqn():
+    global _dqn_model
+    if not _TORCH_OK:
+        print("[DQN] PyTorch 없음 — 휴리스틱 폴백 사용")
+        return
+    if not os.path.exists(MODEL_PATH):
+        print(f"[DQN] 모델 파일 없음: {MODEL_PATH}")
+        return
+
+    class _Net(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.net = nn.Sequential(
+                nn.Linear(8, 128), nn.ReLU(),
+                nn.Linear(128, 128), nn.ReLU(),
+                nn.Linear(128, 32),
+            )
+        def forward(self, x):
+            return self.net(x)
+
+    try:
+        m = _Net()
+        m.load_state_dict(torch.load(MODEL_PATH, map_location="cpu"))
+        m.eval()
+        _dqn_model = m
+        print(f"[DQN] 모델 로딩 완료: {MODEL_PATH}")
+    except Exception as e:
+        print(f"[DQN] 로딩 실패: {e}")
+
+
 # ── 설정 ──────────────────────────────────────────────────────────────────────
 HOST = "127.0.0.1"
 PORT = 9000
 
-# 경로 손실 기반 RSSI 임계값 (dBm)
-RSSI_THRESH = -85.0
-# 릴레이 후보: RSSI 합이 최대인 노드를 릴레이로 선택
-# 위치 보정: 통신 불가 링크가 생기면 해당 UAV를 이웃 방향으로 이동
+# 릴레이 선택 RSSI 임계 (NS-3 경로 손실 모델 기준)
+NS3_RSSI_THRESH = -85.0
+
 
 # ── 통계 ──────────────────────────────────────────────────────────────────────
-stats_lock = threading.Lock()
-stats = {
-    "total_requests": 0,
-    "corrections_applied": 0,
+_stats_lock = threading.Lock()
+_stats = {
+    "total": 0,
+    "corrections": 0,
     "latencies_ms": deque(maxlen=200),
 }
 
 
 def log(msg: str):
-    ts = time.strftime("%H:%M:%S")
-    print(f"[{ts}] {msg}", flush=True)
+    print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
-# ── 릴레이 선택 로직 ──────────────────────────────────────────────────────────
-def select_relay(uavs: list, links: list) -> int:
-    """각 노드의 이웃 RSSI 합이 최대인 노드를 릴레이로 반환."""
+# ── RSSI 계산 (DQN 학습 환경 기준: FSPL 모델) ────────────────────────────────
+def _rssi_fspl(ax: float, ay: float, bx: float, by: float) -> float:
+    d = math.hypot(bx - ax, by - ay) or 0.01
+    fspl = 20 * math.log10(d) + 20 * math.log10(FREQ_MHZ) - 27.55
+    return TX_POWER - fspl
+
+
+# ── 릴레이 선택 (이웃 RSSI 합 최대 노드) ────────────────────────────────────
+def _select_relay(uavs: list, links: list) -> int:
     score = {u["id"]: 0.0 for u in uavs}
     for lk in links:
-        rssi = lk["rssi"]
-        if rssi >= RSSI_THRESH:
-            score[lk["src"]] += rssi
-            score[lk["dst"]] += rssi
-    # 점수가 같으면 중간 인덱스 선호 (n//2)
-    best = max(score, key=lambda k: (score[k], -(abs(k - len(uavs) // 2))))
+        if lk["rssi"] >= NS3_RSSI_THRESH:
+            score[lk["src"]] += lk["rssi"]
+            score[lk["dst"]] += lk["rssi"]
+    n = len(uavs)
+    best = max(score, key=lambda k: (score[k], -(abs(k - n // 2))))
     return best
 
 
-# ── 위치 보정 로직 ──────────────────────────────────────────────────────────
-def compute_correction(uavs: list, links: list) -> Optional[dict]:
-    """
-    RSSI 임계값 미달 링크 중 가장 나쁜 링크를 찾아
-    해당 두 노드 중 더 고립된 쪽을 상대 방향으로 10m 이동.
-    """
-    n = len(uavs)
+# ── DQN 상태 인코딩 ──────────────────────────────────────────────────────────
+def _encode_state(iso_id: int, uavs: list, links: list) -> "np.ndarray":
     pos = {u["id"]: (u["x"], u["y"]) for u in uavs}
-    neighbor_count = {u["id"]: 0 for u in uavs}
+    iso_x, iso_y = pos[iso_id]
 
-    bad_links = []
+    # 나머지 UAV들을 "main group"으로
+    main = [(x, y) for uid, (x, y) in pos.items() if uid != iso_id]
+    if not main:
+        return np.zeros(8, dtype=np.float32)
+
+    cx = sum(p[0] for p in main) / len(main)
+    cy = sum(p[1] for p in main) / len(main)
+
+    nearest = min(main, key=lambda p: (p[0] - iso_x) ** 2 + (p[1] - iso_y) ** 2)
+    nearest_d = math.hypot(nearest[0] - iso_x, nearest[1] - iso_y)
+
+    # 링크 RSSI: iso_id가 포함된 링크에서 FSPL 기준 RSSI 사용 (DQN 학습 환경 일치)
+    nearest_rssi = _rssi_fspl(iso_x, iso_y, nearest[0], nearest[1])
+    init_rssi = max(_rssi_fspl(iso_x, iso_y, px, py) for px, py in main)
+
+    state = np.clip(np.array([
+        (cx - iso_x) / COMM_RANGE,
+        (cy - iso_y) / COMM_RANGE,
+        math.hypot(cx - iso_x, cy - iso_y) / COMM_RANGE,
+        (nearest_rssi - RSSI_THRESH) / 30.0,
+        nearest_d / COMM_RANGE,
+        0.0,      # step_count=0 (첫 보정)
+        0.0,      # blocked=0 (NS-3 기본 시나리오에 장애물 없음)
+        (init_rssi - RSSI_THRESH) / 30.0,
+    ], dtype=np.float32), -3.0, 3.0)
+    return state
+
+
+# ── DQN 위치 보정 ─────────────────────────────────────────────────────────────
+def _compute_correction_dqn(uavs: list, links: list) -> Optional[dict]:
+    """NS3 링크 RSSI 기반으로 고립 UAV를 찾아 DQN 보정 벡터 반환."""
+    pos = {u["id"]: (u["x"], u["y"]) for u in uavs}
+
+    # 각 UAV별 링크 수 / 최저 RSSI 집계
+    link_rssi: dict[int, list] = {u["id"]: [] for u in uavs}
     for lk in links:
-        neighbor_count[lk["src"]] += 1
-        neighbor_count[lk["dst"]] += 1
-        if lk["rssi"] < RSSI_THRESH:
-            bad_links.append(lk)
+        link_rssi[lk["src"]].append(lk["rssi"])
+        link_rssi[lk["dst"]].append(lk["rssi"])
 
-    if not bad_links:
+    # 임계 미달 링크가 있는 UAV = 고립 후보
+    candidates = [
+        uid for uid, rssis in link_rssi.items()
+        if rssis and min(rssis) < NS3_RSSI_THRESH
+    ]
+    if not candidates:
         return None
 
-    # RSSI가 가장 낮은 링크를 우선 처리
-    worst = min(bad_links, key=lambda l: l["rssi"])
-    src_id, dst_id = worst["src"], worst["dst"]
+    # 최저 RSSI가 가장 나쁜 UAV를 iso로 선택
+    iso_id = min(candidates, key=lambda uid: min(link_rssi[uid]))
 
-    # 이웃이 적은 쪽(더 고립된 쪽)을 이동
-    mover = src_id if neighbor_count[src_id] <= neighbor_count[dst_id] else dst_id
-    target = dst_id if mover == src_id else src_id
+    if _dqn_model is not None:
+        state = _encode_state(iso_id, uavs, links)
+        with torch.no_grad():
+            action = int(
+                _dqn_model(torch.FloatTensor(state).unsqueeze(0)).argmax().item()
+            )
+        direction = DIRECTIONS[action // len(STEP_SIZES)]
+        dist_m    = STEP_SIZES[action % len(STEP_SIZES)]
+        dx = dist_m * math.cos(direction)
+        dy = dist_m * math.sin(direction)
+    else:
+        # 폴백: 이웃 방향으로 10m 이동
+        ix, iy = pos[iso_id]
+        others = [(x, y) for uid, (x, y) in pos.items() if uid != iso_id]
+        tx = sum(p[0] for p in others) / len(others)
+        ty = sum(p[1] for p in others) / len(others)
+        d  = math.hypot(tx - ix, ty - iy) or 1.0
+        dx, dy = 10.0 * (tx - ix) / d, 10.0 * (ty - iy) / d
 
-    mx, my = pos[mover]
-    tx, ty = pos[target]
-    dist = math.hypot(tx - mx, ty - my) or 1.0
-    step = 10.0  # meters
-
-    dx = step * (tx - mx) / dist
-    dy = step * (ty - my) / dist
-
-    return {"uav_id": mover, "dx": round(dx, 2), "dy": round(dy, 2)}
+    return {"uav_id": iso_id, "dx": round(dx, 2), "dy": round(dy, 2)}
 
 
 # ── 요청 처리 ──────────────────────────────────────────────────────────────────
-def handle_request(data: str) -> str:
+def _handle(data: str) -> str:
     t0 = time.perf_counter()
     try:
         payload = json.loads(data)
     except json.JSONDecodeError as e:
-        log(f"JSON 파싱 오류: {e} | raw={data[:80]}")
+        log(f"JSON 파싱 오류: {e}")
         return json.dumps({"relay": -1, "correction": None})
 
-    uavs: list = payload.get("uavs", [])
+    uavs: list  = payload.get("uavs", [])
     links: list = payload.get("links", [])
     sim_t: float = payload.get("t", -1.0)
 
-    relay_id = select_relay(uavs, links)
-    correction = compute_correction(uavs, links)
+    relay_id   = _select_relay(uavs, links)
+    correction = _compute_correction_dqn(uavs, links)
 
     elapsed_ms = (time.perf_counter() - t0) * 1000
 
-    with stats_lock:
-        stats["total_requests"] += 1
-        stats["latencies_ms"].append(elapsed_ms)
+    with _stats_lock:
+        _stats["total"] += 1
+        _stats["latencies_ms"].append(elapsed_ms)
         if correction:
-            stats["corrections_applied"] += 1
+            _stats["corrections"] += 1
 
-    resp = {"relay": relay_id, "correction": correction}
+    mode = "DQN" if (_dqn_model is not None and correction) else ("fallback" if correction else "ok")
     log(
-        f"t={sim_t:.1f}s | UAVs={len(uavs)} links={len(links)} "
-        f"relay={relay_id} corr={correction} [{elapsed_ms:.2f}ms]"
+        f"t={sim_t:.1f}s UAVs={len(uavs)} links={len(links)} "
+        f"relay=UAV{relay_id} corr={correction} [{elapsed_ms:.2f}ms/{mode}]"
     )
-    return json.dumps(resp)
+    return json.dumps({"relay": relay_id, "correction": correction})
 
 
-# ── 클라이언트 핸들러 (스레드) ──────────────────────────────────────────────
-def client_thread(conn: socket.socket, addr):
-    log(f"NS-3 연결됨: {addr}")
+# ── 클라이언트 핸들러 ─────────────────────────────────────────────────────────
+def _client_thread(conn: socket.socket, addr):
+    log(f"NS-3 연결: {addr}")
     buf = b""
     try:
         while True:
@@ -130,14 +225,13 @@ def client_thread(conn: socket.socket, addr):
             if not chunk:
                 break
             buf += chunk
-            # 개행 또는 완전한 JSON 오브젝트 단위로 처리
             while b"\n" in buf:
                 line, buf = buf.split(b"\n", 1)
                 line = line.strip()
                 if not line:
                     continue
-                response = handle_request(line.decode("utf-8", errors="replace"))
-                conn.sendall((response + "\n").encode("utf-8"))
+                resp = _handle(line.decode("utf-8", errors="replace"))
+                conn.sendall((resp + "\n").encode("utf-8"))
     except (ConnectionResetError, BrokenPipeError):
         pass
     except Exception as e:
@@ -148,46 +242,38 @@ def client_thread(conn: socket.socket, addr):
 
 
 # ── 통계 출력 스레드 ─────────────────────────────────────────────────────────
-def stats_printer():
+def _stats_printer():
     while True:
         time.sleep(10)
-        with stats_lock:
-            total = stats["total_requests"]
-            corr = stats["corrections_applied"]
-            lats = list(stats["latencies_ms"])
-        if lats:
-            avg_lat = sum(lats) / len(lats)
-            max_lat = max(lats)
-        else:
-            avg_lat = max_lat = 0.0
-        log(
-            f"[통계] 총요청={total} 보정={corr} "
-            f"평균지연={avg_lat:.2f}ms 최대지연={max_lat:.2f}ms"
-        )
+        with _stats_lock:
+            total = _stats["total"]
+            corr  = _stats["corrections"]
+            lats  = list(_stats["latencies_ms"])
+        avg = sum(lats) / len(lats) if lats else 0.0
+        mx  = max(lats) if lats else 0.0
+        log(f"[통계] 요청={total} 보정={corr} 평균={avg:.2f}ms 최대={mx:.2f}ms")
 
 
 # ── 메인 ─────────────────────────────────────────────────────────────────────
 def main():
-    host = HOST
-    port = PORT
+    host, port = HOST, PORT
     if len(sys.argv) >= 3:
-        host = sys.argv[1]
-        port = int(sys.argv[2])
+        host, port = sys.argv[1], int(sys.argv[2])
+
+    _load_dqn()
 
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((host, port))
     srv.listen(5)
-    log(f"ML 서버 시작: {host}:{port} — NS-3 연결 대기 중...")
+    log(f"ML 서버 시작: {host}:{port} ({'DQN' if _dqn_model else '휴리스틱'} 모드)")
 
-    t = threading.Thread(target=stats_printer, daemon=True)
-    t.start()
+    threading.Thread(target=_stats_printer, daemon=True).start()
 
     try:
         while True:
             conn, addr = srv.accept()
-            ct = threading.Thread(target=client_thread, args=(conn, addr), daemon=True)
-            ct.start()
+            threading.Thread(target=_client_thread, args=(conn, addr), daemon=True).start()
     except KeyboardInterrupt:
         log("서버 종료")
     finally:

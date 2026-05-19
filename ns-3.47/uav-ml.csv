@@ -1,19 +1,15 @@
 time_s,latency_ms,relay_id,response
-1.000,0.169,2,"{"relay": 2, "correction": null}
+1.000,0.221,2,"{"relay": 2, "correction": null}
 "
-2.000,0.105,2,"{"relay": 2, "correction": null}
+2.000,0.103,2,"{"relay": 2, "correction": null}
 "
-3.000,0.092,2,"{"relay": 2, "correction": null}
+3.000,0.090,2,"{"relay": 2, "correction": null}
 "
-4.000,0.085,2,"{"relay": 2, "correction": null}
+4.000,0.078,2,"{"relay": 2, "correction": null}
 "
-5.000,0.092,2,"{"relay": 2, "correction": null}
+5.000,0.076,2,"{"relay": 2, "correction": null}
 "
-6.000,0.099,2,"{"relay": 2, "correction": null}
+6.000,0.083,2,"{"relay": 2, "correction": null}
 "
-7.000,0.086,2,"{"relay": 2, "correction": null}
-"
-8.000,0.089,2,"{"relay": 2, "correction": null}
-"
-9.000,0.085,2,"{"relay": 2, "correction": null}
+7.000,0.098,2,"{"relay": 2, "correction": null}
 "

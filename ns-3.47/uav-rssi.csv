@@ -29,14 +29,3 @@ time_s,context,packet_size_bytes,channel_mhz,signal_dbm,noise_dbm,sta_id
 7.000284,/NodeList/4/DeviceList/0/$ns3::WifiNetDevice/Phy/MonitorSnifferRx,120,2412,-76.549890,-93.965985,65535
 7.000493,/NodeList/4/DeviceList/0/$ns3::WifiNetDevice/Phy/MonitorSnifferRx,14,2412,-76.549890,-93.965985,65535
 7.000673,/NodeList/4/DeviceList/0/$ns3::WifiNetDevice/Phy/MonitorSnifferRx,120,2412,-76.549890,-93.965985,65535
-8.000164,/NodeList/4/DeviceList/0/$ns3::WifiNetDevice/Phy/MonitorSnifferRx,14,2412,-76.549890,-93.965985,65535
-8.000284,/NodeList/4/DeviceList/0/$ns3::WifiNetDevice/Phy/MonitorSnifferRx,120,2412,-76.549890,-93.965985,65535
-8.000493,/NodeList/4/DeviceList/0/$ns3::WifiNetDevice/Phy/MonitorSnifferRx,14,2412,-76.549890,-93.965985,65535
-8.000853,/NodeList/4/DeviceList/0/$ns3::WifiNetDevice/Phy/MonitorSnifferRx,120,2412,-76.549890,-93.965985,65535
-8.161194,/NodeList/4/DeviceList/0/$ns3::WifiNetDevice/Phy/MonitorSnifferRx,116,2412,-76.549890,-93.965985,65535
-8.302205,/NodeList/4/DeviceList/0/$ns3::WifiNetDevice/Phy/MonitorSnifferRx,116,2412,-68.821839,-93.965985,65535
-8.475297,/NodeList/4/DeviceList/0/$ns3::WifiNetDevice/Phy/MonitorSnifferRx,116,2412,-81.352063,-93.965985,65535
-9.000164,/NodeList/4/DeviceList/0/$ns3::WifiNetDevice/Phy/MonitorSnifferRx,14,2412,-76.549890,-93.965985,65535
-9.000284,/NodeList/4/DeviceList/0/$ns3::WifiNetDevice/Phy/MonitorSnifferRx,120,2412,-76.549890,-93.965985,65535
-9.000493,/NodeList/4/DeviceList/0/$ns3::WifiNetDevice/Phy/MonitorSnifferRx,14,2412,-76.549890,-93.965985,65535
-9.000753,/NodeList/4/DeviceList/0/$ns3::WifiNetDevice/Phy/MonitorSnifferRx,120,2412,-76.549890,-93.965985,65535
