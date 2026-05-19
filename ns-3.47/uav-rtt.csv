@@ -1,3 +1,1 @@
 time_s,seq_no,rtt_ms,context
-9.008879,8,8.000000,/NodeList/0/ApplicationList/0/$ns3::Ping/Rtt
-10.000693,9,0.000000,/NodeList/0/ApplicationList/0/$ns3::Ping/Rtt

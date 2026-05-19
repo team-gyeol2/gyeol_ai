@@ -2418,7 +2418,9 @@ _NS3_ML_CSV = ROOT / "ns-3.47" / "uav-ml.csv"
 
 
 def _read_ns3_log() -> list[dict]:
-    """uav-ml.csv를 읽어 레코드 리스트 반환. 파일 없으면 빈 리스트."""
+    """uav-ml.csv를 읽어 레코드 리스트 반환.
+    response 필드에 개행이 포함된 경우도 안전하게 처리.
+    """
     rows = []
     if not _NS3_ML_CSV.exists():
         return rows
@@ -2427,11 +2429,15 @@ def _read_ns3_log() -> list[dict]:
             reader = csv.DictReader(f)
             for row in reader:
                 try:
+                    rid = row["relay_id"].strip()
+                    relay = int(rid) if rid not in ("-1", "offline", "") else -1
+                    # response 필드: 개행·따옴표 제거 후 JSON 파싱 시도
+                    raw_resp = row.get("response", "").strip().strip('"').strip()
                     rows.append({
-                        "t":       float(row["time_s"]),
-                        "lat":     float(row["latency_ms"]),
-                        "relay":   int(row["relay_id"]) if row["relay_id"].strip() not in ("-1", "offline", "") else -1,
-                        "resp":    row.get("response", ""),
+                        "t":     float(row["time_s"]),
+                        "lat":   float(row["latency_ms"]),
+                        "relay": relay,
+                        "resp":  raw_resp,
                     })
                 except (ValueError, KeyError):
                     pass
@@ -2471,7 +2477,7 @@ def update_ns3_tab(_):
     corr_rows = []
     for r in online:
         try:
-            d = json.loads(r["resp"].strip().strip('"').replace('""', '"'))
+            d = json.loads(r["resp"])
             if d.get("correction"):
                 corr_rows.append({**r, **d["correction"]})
         except Exception:

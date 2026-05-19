@@ -220,6 +220,10 @@ SendLinkState(NodeContainer nodes)
             if (n > 0)
             {
                 std::string resp(buf, n);
+                // CSV 개행 오염 방지: trailing whitespace 제거
+                while (!resp.empty() &&
+                       (resp.back() == '\n' || resp.back() == '\r'))
+                    resp.pop_back();
                 g_latSum += latMs;
                 ++g_latCount;
 
@@ -246,11 +250,16 @@ SendLinkState(NodeContainer nodes)
                               << std::endl;
                 }
 
-                // ML 로그 기록
+                // ML 로그 기록 (JSON 내 " → "" CSV 이스케이프)
                 if (g_mlStream.is_open())
+                {
+                    std::string esc;
+                    esc.reserve(resp.size() + 8);
+                    for (char c : resp) { if (c == '"') esc += '"'; esc += c; }
                     g_mlStream << std::fixed << std::setprecision(3)
                                << now << "," << latMs << ","
-                               << relayId << ",\"" << resp << "\"\n";
+                               << relayId << ",\"" << esc << "\"\n";
+                }
             }
             else
             {
