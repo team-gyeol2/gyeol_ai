@@ -358,7 +358,7 @@ main(int argc, char* argv[])
     double      spacing      = 25.0;
     double      altitude     = 30.0;
     double      speed        = 1.5;
-    double      simTime      = 20.0;
+    double      simTime      = 16.0;
     uint32_t    pingCount    = 10;
     double      pingInterval = 1.0;
     bool        enablePcap   = false;
@@ -458,7 +458,10 @@ main(int argc, char* argv[])
                   << ") — DQN 위치 보정 시연\n";
 
     // ── 라우팅 & IP ───────────────────────────────────────────────────────────
+    // HelloInterval 1s / TcInterval 2s → OLSR 수렴 ~3s (기본 6s 대비 2배 빠름)
     OlsrHelper              olsr;
+    olsr.Set("HelloInterval", TimeValue(Seconds(1.0)));
+    olsr.Set("TcInterval",    TimeValue(Seconds(2.0)));
     Ipv4StaticRoutingHelper staticRouting;
     Ipv4ListRoutingHelper   listRouting;
     listRouting.Add(olsr, 10);
@@ -473,12 +476,14 @@ main(int argc, char* argv[])
     Ipv4InterfaceContainer interfaces = ipv4.Assign(devices);
 
     // ── Ping 앱 ───────────────────────────────────────────────────────────────
+    // OLSR 수렴 대기 후 ping 시작 (4s) — 수렴 전 패킷 손실 방지
+    const double pingStart = 4.0;
     PingHelper ping(interfaces.GetAddress(numUavs - 1));
     ping.SetAttribute("Count",       UintegerValue(pingCount));
     ping.SetAttribute("Interval",    TimeValue(Seconds(pingInterval)));
     ping.SetAttribute("VerboseMode", EnumValue(Ping::VerboseMode::SILENT));
     ApplicationContainer pingApp = ping.Install(nodes.Get(0));
-    pingApp.Start(Seconds(1.0));
+    pingApp.Start(Seconds(pingStart));
     pingApp.Stop(Seconds(simTime - 0.5));
 
     // ── 트레이스 연결 ─────────────────────────────────────────────────────────
