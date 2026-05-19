@@ -353,6 +353,7 @@ main(int argc, char* argv[])
     uint32_t    pingCount    = 10;
     double      pingInterval = 1.0;
     bool        enablePcap   = false;
+    bool        isolate      = false;   // UAV4를 군집에서 격리 (DQN 보정 시연용)
     std::string mlHost       = "127.0.0.1";
     uint16_t    mlPort       = 9000;
 
@@ -365,6 +366,7 @@ main(int argc, char* argv[])
     cmd.AddValue("pingCount",    "Number of ping packets",                  pingCount);
     cmd.AddValue("pingInterval", "Ping interval (s)",                       pingInterval);
     cmd.AddValue("enablePcap",   "Enable PCAP trace",                       enablePcap);
+    cmd.AddValue("isolate",      "Put last UAV far away to trigger DQN",   isolate);
     cmd.AddValue("mlHost",       "ML server IP (default 127.0.0.1)",        mlHost);
     cmd.AddValue("mlPort",       "ML server port (default 9000)",           mlPort);
     cmd.Parse(argc, argv);
@@ -418,7 +420,13 @@ main(int argc, char* argv[])
     MobilityHelper mobility;
     auto positions = CreateObject<ListPositionAllocator>();
     for (uint32_t i = 0; i < numUavs; ++i)
-        positions->Add(Vector(i * spacing, 0.0, altitude));
+    {
+        if (isolate && i == numUavs - 1)
+            // 마지막 UAV를 군집과 200m 떨어진 곳에 배치 (격리 시나리오)
+            positions->Add(Vector((numUavs - 2) * spacing + 200.0, 0.0, altitude));
+        else
+            positions->Add(Vector(i * spacing, 0.0, altitude));
+    }
     mobility.SetPositionAllocator(positions);
     mobility.SetMobilityModel("ns3::ConstantVelocityMobilityModel");
     mobility.Install(nodes);
@@ -427,8 +435,18 @@ main(int argc, char* argv[])
     {
         auto model = nodes.Get(i)->GetObject<ConstantVelocityMobilityModel>();
         const double lateral = (i % 2 == 0) ? 0.4 : -0.4;
-        model->SetVelocity(Vector(speed, lateral, 0.0));
+        if (isolate && i == numUavs - 1)
+            // 격리 UAV는 정지 — DQN이 매초 보정벡터를 적용해 이동시킴
+            model->SetVelocity(Vector(0.0, 0.0, 0.0));
+        else
+            model->SetVelocity(Vector(speed, lateral, 0.0));
     }
+
+    if (isolate)
+        std::cout << "[시나리오] 격리 모드: UAV" << numUavs - 1
+                  << " 초기 위치 = ("
+                  << (numUavs - 2) * spacing + 200.0 << ", 0, " << altitude
+                  << ") — DQN 위치 보정 시연\n";
 
     // ── 라우팅 & IP ───────────────────────────────────────────────────────────
     OlsrHelper              olsr;

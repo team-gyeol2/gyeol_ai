@@ -107,36 +107,32 @@ def _select_relay(uavs: list, links: list) -> int:
 
 
 # ── DQN 상태 인코딩 ──────────────────────────────────────────────────────────
-def _encode_state(iso_id: int, uavs: list, links: list) -> "np.ndarray":
-    pos = {u["id"]: (u["x"], u["y"]) for u in uavs}
-    iso_x, iso_y = pos[iso_id]
-
-    # 나머지 UAV들을 "main group"으로
-    main = [(x, y) for uid, (x, y) in pos.items() if uid != iso_id]
-    if not main:
+def _encode_state_with_main(iso_id: int, iso_x: float, iso_y: float,
+                             main_pos: list) -> "np.ndarray":
+    """격리 UAV 위치 + main 그룹 위치 리스트로 8차원 DQN 상태 생성."""
+    if not main_pos:
         return np.zeros(8, dtype=np.float32)
 
-    cx = sum(p[0] for p in main) / len(main)
-    cy = sum(p[1] for p in main) / len(main)
+    cx = sum(p[0] for p in main_pos) / len(main_pos)
+    cy = sum(p[1] for p in main_pos) / len(main_pos)
 
-    nearest = min(main, key=lambda p: (p[0] - iso_x) ** 2 + (p[1] - iso_y) ** 2)
+    nearest = min(main_pos, key=lambda p: (p[0] - iso_x) ** 2 + (p[1] - iso_y) ** 2)
     nearest_d = math.hypot(nearest[0] - iso_x, nearest[1] - iso_y)
 
-    # 링크 RSSI: iso_id가 포함된 링크에서 FSPL 기준 RSSI 사용 (DQN 학습 환경 일치)
+    # FSPL 모델 기준 RSSI (DQN 학습 환경과 동일한 모델)
     nearest_rssi = _rssi_fspl(iso_x, iso_y, nearest[0], nearest[1])
-    init_rssi = max(_rssi_fspl(iso_x, iso_y, px, py) for px, py in main)
+    init_rssi    = max(_rssi_fspl(iso_x, iso_y, px, py) for px, py in main_pos)
 
-    state = np.clip(np.array([
+    return np.clip(np.array([
         (cx - iso_x) / COMM_RANGE,
         (cy - iso_y) / COMM_RANGE,
         math.hypot(cx - iso_x, cy - iso_y) / COMM_RANGE,
         (nearest_rssi - RSSI_THRESH) / 30.0,
         nearest_d / COMM_RANGE,
-        0.0,      # step_count=0 (첫 보정)
-        0.0,      # blocked=0 (NS-3 기본 시나리오에 장애물 없음)
+        0.0,  # step_count=0 (보정 첫 스텝)
+        0.0,  # blocked=0 (기본 시나리오 장애물 없음)
         (init_rssi - RSSI_THRESH) / 30.0,
     ], dtype=np.float32), -3.0, 3.0)
-    return state
 
 
 # ── DQN 위치 보정 ─────────────────────────────────────────────────────────────
@@ -150,19 +146,42 @@ def _compute_correction_dqn(uavs: list, links: list) -> Optional[dict]:
         link_rssi[lk["src"]].append(lk["rssi"])
         link_rssi[lk["dst"]].append(lk["rssi"])
 
-    # 임계 미달 링크가 있는 UAV = 고립 후보
-    candidates = [
-        uid for uid, rssis in link_rssi.items()
-        if rssis and min(rssis) < NS3_RSSI_THRESH
-    ]
-    if not candidates:
+    # 연결 그래프 구성: RSSI > 임계값인 링크만 연결됨
+    n = len(uavs)
+    adj: dict[int, set] = {u["id"]: set() for u in uavs}
+    for lk in links:
+        if lk["rssi"] >= NS3_RSSI_THRESH:
+            adj[lk["src"]].add(lk["dst"])
+            adj[lk["dst"]].add(lk["src"])
+
+    # 연결 컴포넌트 탐색
+    visited, comps = set(), []
+    for uid in adj:
+        if uid not in visited:
+            comp, stack = set(), [uid]
+            while stack:
+                v = stack.pop()
+                if v in visited:
+                    continue
+                visited.add(v); comp.add(v)
+                stack.extend(adj[v] - visited)
+            comps.append(comp)
+
+    # 단일 컴포넌트 = 모두 연결됨 → 보정 불필요
+    if len(comps) <= 1:
         return None
 
-    # 최저 RSSI가 가장 나쁜 UAV를 iso로 선택
-    iso_id = min(candidates, key=lambda uid: min(link_rssi[uid]))
+    # 가장 작은 컴포넌트의 UAV를 격리 UAV로 선정 (보통 1대)
+    main_comp = max(comps, key=len)
+    iso_comp  = min(comps, key=len)
+    iso_id    = next(iter(iso_comp))
+
+    ix, iy = pos[iso_id]
+    # main_comp UAV 위치 리스트 (격리 UAV의 이동 목표 그룹)
+    main_pos = [(pos[uid][0], pos[uid][1]) for uid in main_comp]
 
     if _dqn_model is not None:
-        state = _encode_state(iso_id, uavs, links)
+        state = _encode_state_with_main(iso_id, ix, iy, main_pos)
         with torch.no_grad():
             action = int(
                 _dqn_model(torch.FloatTensor(state).unsqueeze(0)).argmax().item()
@@ -172,11 +191,9 @@ def _compute_correction_dqn(uavs: list, links: list) -> Optional[dict]:
         dx = dist_m * math.cos(direction)
         dy = dist_m * math.sin(direction)
     else:
-        # 폴백: 이웃 방향으로 10m 이동
-        ix, iy = pos[iso_id]
-        others = [(x, y) for uid, (x, y) in pos.items() if uid != iso_id]
-        tx = sum(p[0] for p in others) / len(others)
-        ty = sum(p[1] for p in others) / len(others)
+        # 폴백: main_comp 무게중심 방향으로 10m 이동
+        tx = sum(p[0] for p in main_pos) / len(main_pos)
+        ty = sum(p[1] for p in main_pos) / len(main_pos)
         d  = math.hypot(tx - ix, ty - iy) or 1.0
         dx, dy = 10.0 * (tx - ix) / d, 10.0 * (ty - iy) / d
 
