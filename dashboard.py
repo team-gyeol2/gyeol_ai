@@ -1403,6 +1403,166 @@ def make_figure_real(scenario: str, t_s: str,
     return fig
 
 
+# ── 실제 환경 3D Figure ──────────────────────────────────────────────────────
+
+def make_figure_real_3d(scenario: str, t_s: str,
+                         prev_relay: int | None,
+                         bad_streak: int) -> go.Figure:
+    pos  = POSITIONS.get(scenario, {}).get(t_s, {})
+    lnks = LINKS.get(scenario, {}).get(t_s, {})
+
+    # UAV 위치를 실제 좌표로 변환 (z = 정찰 고도)
+    pos_r: dict[int, tuple[float, float, float, str]] = {}
+    for uid, (x, y, role) in pos.items():
+        rx, ry = _to_real(x, y)
+        pos_r[uid] = (rx, ry, UAV_ALTITUDE_M, role)
+
+    traces: list = []
+
+    # 도로 (z=0 평면)
+    for road in REAL_ROADS:
+        n = len(road["xs"])
+        traces.append(go.Scatter3d(
+            x=road["xs"], y=road["ys"], z=[0] * n,
+            mode="lines",
+            line=dict(color=road["c"], width=max(2, road["w"] // 3)),
+            hoverinfo="skip", showlegend=False,
+        ))
+
+    # 건물 3D 박스
+    for i, b in enumerate(REAL_BUILDINGS):
+        for trace in _building_box_traces(b):
+            trace.legendgroup = "real_buildings_3d"
+            trace.showlegend = (i == 0)
+            if i == 0:
+                trace.name = "3D 건물"
+            traces.append(trace)
+
+    # 링크 (UAV 고도 평면)
+    for (src, dst), info in lnks.items():
+        if src not in pos_r or dst not in pos_r:
+            continue
+        x0, y0, z0, _ = pos_r[src]
+        x1, y1, z1, _ = pos_r[dst]
+        traces.append(go.Scatter3d(
+            x=[x0, x1], y=[y0, y1], z=[z0, z1],
+            mode="lines",
+            line=dict(color=STATE_COLOR[info["state"]], width=4),
+            hovertemplate=(f"UAV{src}↔UAV{dst}<br>state: {info['state']}<br>"
+                           f"RSSI: {info['rssi']:.1f}dBm  PLR: {info['plr']:.1f}%"
+                           "<extra></extra>"),
+            showlegend=False,
+        ))
+
+    relay_vals = [v["relay"] for v in lnks.values()]
+    cur_relay  = max(set(relay_vals), key=relay_vals.count) if relay_vals else None
+
+    # 격리 UAV 탐지
+    comps = _components(pos, lnks)
+    need_correction = len(comps) > 1 and bad_streak >= HYSTERESIS
+    isolated_uavs: set[int] = set()
+    if need_correction:
+        main_comp = max(comps, key=len)
+        for comp in comps:
+            if comp == main_comp:
+                continue
+            isolated_uavs.update(comp)
+
+    # UAV 노드
+    for uid in sorted(pos_r):
+        x, y, z, role = pos_r[uid]
+        is_relay    = (uid == cur_relay)
+        is_isolated = (uid in isolated_uavs)
+        color  = UAV_RELAY if is_relay else (UAV_ISOLATED if is_isolated else UAV_NORMAL)
+        symbol = "diamond" if is_relay else "circle"
+        size   = 12 if is_relay else 8
+        label  = f"UAV{uid}" + (" ⭐" if is_relay else (" ⚠" if is_isolated else ""))
+        traces.append(go.Scatter3d(
+            x=[x], y=[y], z=[z],
+            mode="markers+text",
+            marker=dict(size=size, color=color, symbol=symbol,
+                        line=dict(color="white", width=1)),
+            text=[label], textposition="top center",
+            textfont=dict(size=9, color="#2c3e50"),
+            hovertemplate=(f"<b>UAV{uid}</b><br>role: {role}<br>"
+                           f"실제위치: ({x:.0f}m, {y:.0f}m)<br>"
+                           f"고도: {z:.0f}m (정찰 비행)"
+                           + ("<br>현재 Relay" if is_relay else "")
+                           + ("<br>격리됨" if is_isolated else "")
+                           + "<extra></extra>"),
+            name=f"UAV{uid}", showlegend=False,
+        ))
+
+    # 삼성역 마커 (지면)
+    traces.append(go.Scatter3d(
+        x=[2500], y=[2500], z=[0],
+        mode="markers+text",
+        marker=dict(size=10, color="#f39c12", symbol="diamond",
+                    line=dict(color="white", width=2)),
+        text=["삼성역"], textposition="top center",
+        textfont=dict(size=10, color="#f39c12"),
+        hovertemplate="<b>삼성역</b><br>지도 중심점<extra></extra>",
+        showlegend=False,
+    ))
+
+    # Relay 전환 화살표
+    if (prev_relay is not None and cur_relay is not None
+            and prev_relay != cur_relay
+            and prev_relay in pos_r and cur_relay in pos_r):
+        px, py, pz, _ = pos_r[prev_relay]
+        nx, ny, nz, _ = pos_r[cur_relay]
+        traces.append(go.Scatter3d(
+            x=[px, (px+nx)/2, nx], y=[py, (py+ny)/2, ny], z=[pz, (pz+nz)/2+40, nz],
+            mode="lines",
+            line=dict(color="#f39c12", width=3, dash="dash"),
+            hoverinfo="skip", showlegend=False,
+        ))
+
+    max_h = max((b["height"] for b in REAL_BUILDINGS), default=100)
+
+    fig = go.Figure(data=traces)
+    fig.update_layout(
+        uirevision=scenario,
+        margin=dict(l=0, r=0, t=0, b=0),
+        scene=dict(
+            xaxis=dict(
+                title="X (→ 동쪽)",
+                range=[0, 5000], autorange=False,
+                tickvals=[0, 1000, 2000, 3000, 4000, 5000],
+                ticktext=["0", "1km", "2km", "3km", "4km", "5km"],
+                backgroundcolor="#eaecee", gridcolor="#ccc", showspikes=False,
+            ),
+            yaxis=dict(
+                title="Y (→ 북쪽)",
+                range=[0, 5000], autorange=False,
+                tickvals=[0, 1000, 2000, 3000, 4000, 5000],
+                ticktext=["0", "1km", "2km", "3km", "4km", "5km"],
+                backgroundcolor="#eaecee", gridcolor="#ccc", showspikes=False,
+            ),
+            zaxis=dict(
+                title="고도 (m)",
+                range=[0, max_h + 80], autorange=False,
+                backgroundcolor="#e8eeff", gridcolor="#aab", showspikes=False,
+            ),
+            bgcolor="#eaecee",
+            camera=dict(
+                eye=dict(x=0.6, y=-1.8, z=0.7),
+                up=dict(x=0, y=0, z=1),
+                center=dict(x=0, y=0, z=-0.15),
+                projection=dict(type="perspective"),
+            ),
+            dragmode="turntable",
+            aspectmode="manual",
+            aspectratio=dict(x=2.0, y=2.0, z=0.4),
+        ),
+        paper_bgcolor="white",
+        height=580,
+        legend=dict(x=1.01, y=1, bgcolor="rgba(255,255,255,0.9)",
+                    bordercolor="#ccc", borderwidth=1),
+    )
+    return fig
+
+
 # ── 앱 ───────────────────────────────────────────────────────────────────────
 app = dash.Dash(__name__, title="UAV 통신 대시보드")
 
@@ -1421,6 +1581,10 @@ app.layout = html.Div([
     dcc.Store(id="prev-relay-store-real", data=None),
     dcc.Store(id="bad-streak-store-real", data=0),
     dcc.Interval(id="interval-real", interval=600, n_intervals=0, disabled=True),
+    dcc.Store(id="frame-store-real3d", data=0),
+    dcc.Store(id="prev-relay-store-real3d", data=None),
+    dcc.Store(id="bad-streak-store-real3d", data=0),
+    dcc.Interval(id="interval-real3d", interval=600, n_intervals=0, disabled=True),
     dcc.Interval(id="ns3-interval", interval=2000, n_intervals=0),
 
     # ── 헤더 ─────────────────────────────────────────────────────────────────
@@ -1556,6 +1720,130 @@ app.layout = html.Div([
               "background": "#f5f6fa", "minHeight": "calc(100vh - 150px)"}),
 
     ]),  # end Tab 1 (실제 환경)
+
+    # ════════════════════════════════════════════════════════════════════════
+    # TAB 1-B: 실제 환경 3D (삼성역 5km×5km 3D)
+    # ════════════════════════════════════════════════════════════════════════
+    dcc.Tab(label="실제 환경 3D", value="tab-real3d", children=[
+
+    html.Div([
+        html.Div([
+            html.Label("시나리오", style={"fontSize": 12, "fontWeight": "bold"}),
+            dcc.Dropdown(
+                id="scenario-dd-real3d", clearable=False,
+                options=[{"label": s, "value": s} for s in REAL_SCENARIOS],
+                value=REAL_SCENARIOS[0] if REAL_SCENARIOS else None,
+                style={"fontSize": 13, "width": 260},
+            ),
+        ]),
+        html.Div([
+            html.Label("재생 속도", style={"fontSize": 12, "fontWeight": "bold"}),
+            dcc.Slider(id="speed-slider-real3d", min=1, max=5, step=1, value=2,
+                       marks={1:"느림", 3:"보통", 5:"빠름"},
+                       tooltip={"placement": "bottom"}, updatemode="drag"),
+        ], style={"width": 200, "marginLeft": 20}),
+        html.Div([
+            html.Button("▶ Play",  id="play-btn-real3d",  n_clicks=0,
+                        style={"marginRight": 8, "padding": "6px 18px",
+                               "background": "#27ae60", "color": "white",
+                               "border": "none", "borderRadius": 4,
+                               "cursor": "pointer", "fontSize": 14}),
+            html.Button("⏸ Pause", id="pause-btn-real3d", n_clicks=0,
+                        style={"padding": "6px 18px",
+                               "background": "#e74c3c", "color": "white",
+                               "border": "none", "borderRadius": 4,
+                               "cursor": "pointer", "fontSize": 14}),
+        ], style={"marginLeft": 20, "alignSelf": "flex-end"}),
+        html.Div(id="time-label-real3d",
+                 style={"marginLeft": 20, "alignSelf": "flex-end",
+                        "fontSize": 13, "color": "#555", "minWidth": 140}),
+        html.Div([
+            html.Span(f"정찰 고도 {UAV_ALTITUDE_M:.0f}m | 삼성역 중심 5km×5km | 3D 뷰",
+                      style={"fontSize": 11, "color": "#888"}),
+        ], style={"marginLeft": "auto", "alignSelf": "flex-end", "paddingRight": 8}),
+    ], style={"display": "flex", "alignItems": "flex-end", "gap": 0,
+              "padding": "14px 24px", "background": "#ecf0f1",
+              "borderBottom": "1px solid #ddd"}),
+
+    html.Div([
+        dcc.Slider(id="frame-slider-real3d", min=0, max=1, step=1, value=0,
+                   marks={}, updatemode="drag",
+                   tooltip={"placement": "bottom", "always_visible": False}),
+    ], style={"padding": "8px 24px", "background": "#ecf0f1",
+              "borderBottom": "1px solid #ddd"}),
+
+    html.Div([
+        # 3D 지도
+        html.Div([
+            dcc.Graph(id="map-graph-real3d", config={"displayModeBar": True}),
+        ], style={"flex": "3", "background": "white", "borderRadius": 8,
+                  "padding": 12, "marginRight": 12,
+                  "boxShadow": "0 1px 4px rgba(0,0,0,.1)"}),
+
+        # 사이드 패널
+        html.Div([
+            # 멀티홉 결과 카드
+            html.Div(id="multihop-result-real3d", style={"marginBottom": 12}),
+
+            html.Div([
+                html.H4("링크 상태", style={"margin": "0 0 8px", "fontSize": 13,
+                                           "color": "#2c3e50"}),
+                html.Div(id="state-summary-real3d"),
+            ], style={"background": "white", "borderRadius": 8, "padding": 12,
+                      "marginBottom": 12, "boxShadow": "0 1px 4px rgba(0,0,0,.1)"}),
+
+            html.Div([
+                html.H4("Relay 전환 이력", style={"margin": "0 0 8px", "fontSize": 13,
+                                                  "color": "#e67e22"}),
+                html.Div(id="relay-log-real3d",
+                         style={"maxHeight": 100, "overflowY": "auto", "fontSize": 12}),
+            ], style={"background": "white", "borderRadius": 8, "padding": 12,
+                      "marginBottom": 12, "boxShadow": "0 1px 4px rgba(0,0,0,.1)"}),
+
+            # 3D 조작법 안내
+            html.Div([
+                html.Div("💡 3D 조작법", style={"fontWeight": "bold", "fontSize": 11,
+                                               "marginBottom": 6}),
+                html.Div("• 마우스 드래그: 회전", style={"fontSize": 11, "color": "#555"}),
+                html.Div("• 스크롤: 확대/축소", style={"fontSize": 11, "color": "#555"}),
+                html.Div("• 더블클릭: 뷰 초기화", style={"fontSize": 11, "color": "#555"}),
+                html.Div("", style={"height": 8}),
+                html.Div("링크 색상", style={"fontWeight": "bold", "fontSize": 11,
+                                           "marginBottom": 4}),
+                *[html.Div([
+                    html.Span("━━", style={"color": STATE_COLOR[s], "marginRight": 6}),
+                    html.Span(s, style={"fontSize": 11}),
+                ]) for s in ["healthy", "degraded", "disconnected"]],
+                html.Div("", style={"height": 8}),
+                html.Div("UAV", style={"fontWeight": "bold", "fontSize": 11,
+                                       "margin": "0 0 4px"}),
+                html.Div("⭐ 현재 Relay",  style={"color": UAV_RELAY,    "fontSize": 11}),
+                html.Div("⚠ 격리/보정중", style={"color": UAV_ISOLATED, "fontSize": 11}),
+                html.Div("◆ 삼성역 (지면)", style={"color": "#f39c12",   "fontSize": 11}),
+                html.Div("", style={"height": 8}),
+                html.Div("건물 유형", style={"fontWeight": "bold", "fontSize": 11,
+                                           "marginBottom": 4}),
+                *[html.Div([
+                    html.Span("■", style={"color": c, "marginRight": 5}),
+                    html.Span(lbl, style={"fontSize": 10}),
+                ]) for lbl, c in [
+                    ("초고층 오피스",  "#c0392b"),
+                    ("고층 오피스",   "#e67e22"),
+                    ("호텔/컨벤션",   "#3498db"),
+                    ("백화점",        "#8e44ad"),
+                    ("상업/문화",     "#27ae60"),
+                    ("주거",          "#bdc3c7"),
+                ]],
+            ], style={"background": "white", "borderRadius": 8, "padding": 12,
+                      "boxShadow": "0 1px 4px rgba(0,0,0,.1)"}),
+
+        ], style={"flex": "1.2", "display": "flex", "flexDirection": "column",
+                  "overflowY": "auto", "maxHeight": "calc(100vh - 150px)"}),
+
+    ], style={"display": "flex", "padding": "14px 24px",
+              "background": "#f5f6fa", "minHeight": "calc(100vh - 150px)"}),
+
+    ]),  # end Tab 실제 환경 3D
 
     # ════════════════════════════════════════════════════════════════════════
     # TAB 2: 2D 시뮬레이션
@@ -2345,6 +2633,164 @@ def update_view_real(frame_idx, scenario, prev_relay, bad_streak):
     })
 
     return fig, time_label, state_summary, relay_log, correction_log, multihop_card
+
+
+# ── 실제 환경 3D 탭 콜백 ─────────────────────────────────────────────────────
+
+@callback(
+    Output("frame-slider-real3d", "max"),
+    Output("frame-slider-real3d", "marks"),
+    Output("frame-slider-real3d", "value"),
+    Output("frame-store-real3d",  "data"),
+    Output("prev-relay-store-real3d", "data"),
+    Output("bad-streak-store-real3d", "data"),
+    Input("scenario-dd-real3d", "value"),
+)
+def reset_on_scenario_real3d(scenario):
+    ts = get_ts(scenario)
+    n  = len(ts) - 1
+    step = max(1, n // 12)
+    marks = {i: f"{float(ts[i]):.0f}s" for i in range(0, n+1, step)}
+    return n, marks, 0, 0, None, 0
+
+
+@callback(
+    Output("interval-real3d", "disabled"),
+    Output("interval-real3d", "interval"),
+    Input("play-btn-real3d",    "n_clicks"),
+    Input("pause-btn-real3d",   "n_clicks"),
+    Input("speed-slider-real3d","value"),
+    State("interval-real3d",    "disabled"),
+)
+def toggle_play_real3d(play_n, pause_n, speed, is_disabled):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return True, 600
+    btn = ctx.triggered[0]["prop_id"].split(".")[0]
+    interval_ms = max(100, 600 - (speed - 1) * 120)
+    if btn == "play-btn-real3d":
+        return False, interval_ms
+    if btn == "pause-btn-real3d":
+        return True, interval_ms
+    return is_disabled, interval_ms
+
+
+@callback(
+    Output("frame-store-real3d",      "data",    allow_duplicate=True),
+    Output("frame-slider-real3d",     "value",   allow_duplicate=True),
+    Output("prev-relay-store-real3d", "data",    allow_duplicate=True),
+    Output("bad-streak-store-real3d", "data",    allow_duplicate=True),
+    Input("interval-real3d",          "n_intervals"),
+    State("frame-store-real3d",       "data"),
+    State("scenario-dd-real3d",       "value"),
+    State("prev-relay-store-real3d",  "data"),
+    State("bad-streak-store-real3d",  "data"),
+    prevent_initial_call=True,
+)
+def advance_frame_real3d(n, frame_idx, scenario, prev_relay, bad_streak):
+    ts  = get_ts(scenario)
+    nxt = (frame_idx + 1) % len(ts)
+    t_s = ts[nxt]
+    lnks = LINKS.get(scenario, {}).get(t_s, {})
+    relay_vals = [v["relay"] for v in lnks.values()]
+    cur_relay  = max(set(relay_vals), key=relay_vals.count) if relay_vals else prev_relay
+    any_disc   = any(v["state"] == "disconnected" for v in lnks.values())
+    new_streak = (bad_streak + 1) if any_disc else 0
+    return nxt, nxt, cur_relay, new_streak
+
+
+@callback(
+    Output("frame-store-real3d",      "data",    allow_duplicate=True),
+    Output("prev-relay-store-real3d", "data",    allow_duplicate=True),
+    Output("bad-streak-store-real3d", "data",    allow_duplicate=True),
+    Input("frame-slider-real3d",      "value"),
+    State("scenario-dd-real3d",       "value"),
+    prevent_initial_call=True,
+)
+def slider_moved_real3d(slider_val, scenario):
+    ts  = get_ts(scenario)
+    t_s = ts[min(slider_val, len(ts)-1)]
+    lnks = LINKS.get(scenario, {}).get(t_s, {})
+    relay_vals = [v["relay"] for v in lnks.values()]
+    cur_relay  = max(set(relay_vals), key=relay_vals.count) if relay_vals else None
+    return slider_val, cur_relay, 0
+
+
+@callback(
+    Output("map-graph-real3d",       "figure"),
+    Output("time-label-real3d",      "children"),
+    Output("state-summary-real3d",   "children"),
+    Output("relay-log-real3d",       "children"),
+    Output("multihop-result-real3d", "children"),
+    Input("frame-store-real3d",      "data"),
+    Input("scenario-dd-real3d",      "value"),
+    State("prev-relay-store-real3d", "data"),
+    State("bad-streak-store-real3d", "data"),
+)
+def update_view_real3d(frame_idx, scenario, prev_relay, bad_streak):
+    ts  = get_ts(scenario)
+    idx = min(frame_idx, len(ts) - 1)
+    t_s = ts[idx]
+
+    fig = make_figure_real_3d(scenario, t_s, prev_relay, bad_streak)
+    time_label = f"t = {float(t_s):.2f}s  ({idx+1}/{len(ts)})"
+
+    lnks = LINKS.get(scenario, {}).get(t_s, {})
+    cnt  = {"healthy": 0, "degraded": 0, "disconnected": 0}
+    for v in lnks.values():
+        if v["state"] in cnt:
+            cnt[v["state"]] += 1
+    state_summary = [
+        html.Div([
+            html.Span("●", style={"color": STATE_COLOR[s], "fontSize": 18,
+                                   "marginRight": 6}),
+            html.Span(f"{s}: {cnt[s]}건", style={"fontSize": 12}),
+        ], style={"marginBottom": 4})
+        for s in ["healthy", "degraded", "disconnected"]
+    ]
+
+    relay_events = []
+    prev_r = None
+    for t in ts[:idx+1]:
+        lk = LINKS.get(scenario, {}).get(t, {})
+        rv = [v["relay"] for v in lk.values()]
+        cur = max(set(rv), key=rv.count) if rv else None
+        if prev_r is not None and cur != prev_r:
+            relay_events.append(
+                html.Div(f"t={float(t):.1f}s  UAV{prev_r}→UAV{cur}",
+                         style={"color": "#e67e22", "borderBottom": "1px solid #fde",
+                                "padding": "2px 0"}))
+        prev_r = cur
+    relay_log = relay_events[-10:] if relay_events else [
+        html.Span("전환 없음", style={"color": "#999", "fontSize": 11})]
+
+    mh = _multihop_connectivity(lnks)
+    if mh["all_multihop"]:
+        if mh["all_direct"]:
+            bg, icon, title = "#27ae60", "✅", "직접 연결 성공"
+            body = "모든 UAV 쌍이 직접 링크로 연결됩니다."
+        else:
+            bg, icon, title = "#2980b9", "🔗", "멀티홉 알고리즘 성공!"
+            gain = mh.get("multihop_gain", 0)
+            body = (f"직접 연결 불가 {gain}개 쌍을 멀티홉으로 복구했습니다. "
+                    f"전체 {mh['n_uavs']}대 UAV 통신망 유지 중.")
+    else:
+        bg, icon, title = "#e74c3c", "❌", "연결 실패"
+        body = "멀티홉으로도 일부 UAV 간 경로를 찾지 못했습니다."
+
+    multihop_card = html.Div([
+        html.Div([
+            html.Span(icon, style={"fontSize": 18, "marginRight": 8}),
+            html.Span(title, style={"fontWeight": "bold", "fontSize": 13}),
+        ], style={"marginBottom": 6}),
+        html.Div(body, style={"fontSize": 11, "lineHeight": "1.5"}),
+    ], style={
+        "background": bg, "color": "white",
+        "borderRadius": 8, "padding": "10px 14px",
+        "boxShadow": "0 2px 6px rgba(0,0,0,.2)",
+    })
+
+    return fig, time_label, state_summary, relay_log, multihop_card
 
 
 # ── 3D 탭 콜백 ───────────────────────────────────────────────────────────────
