@@ -1630,17 +1630,20 @@ app.layout = html.Div([
                  style={"marginLeft": 20, "alignSelf": "flex-end",
                         "fontSize": 13, "color": "#555", "minWidth": 140}),
         html.Div([
-            dcc.RadioItems(
-                id="view-mode-real",
-                options=[{"label": " 2D", "value": "2d"},
-                         {"label": " 3D", "value": "3d"}],
-                value="2d",
-                inline=True,
-                inputStyle={"marginRight": 3},
-                labelStyle={"marginRight": 10, "cursor": "pointer",
-                            "fontSize": 13, "fontWeight": "bold"},
-            ),
-        ], style={"marginLeft": 20, "alignSelf": "flex-end"}),
+            html.Button("2D", id="btn-view-2d-real", n_clicks=0,
+                        style={"padding": "6px 18px", "fontSize": 14,
+                               "fontWeight": "bold", "cursor": "pointer",
+                               "background": "#2980b9", "color": "white",
+                               "border": "none",
+                               "borderRadius": "4px 0 0 4px"}),
+            html.Button("3D", id="btn-view-3d-real", n_clicks=0,
+                        style={"padding": "6px 18px", "fontSize": 14,
+                               "fontWeight": "bold", "cursor": "pointer",
+                               "background": "#bdc3c7", "color": "#2c3e50",
+                               "border": "none",
+                               "borderRadius": "0 4px 4px 0"}),
+            dcc.Store(id="view-mode-real", data="2d"),
+        ], style={"marginLeft": 20, "alignSelf": "flex-end", "display": "flex"}),
         html.Div([
             html.Span(f"정찰 고도 {UAV_ALTITUDE_M:.0f}m | 삼성역 중심 5km×5km",
                       style={"fontSize": 11, "color": "#888"}),
@@ -2424,6 +2427,31 @@ def slider_moved_real(slider_val, scenario):
 
 
 @callback(
+    Output("view-mode-real",    "data"),
+    Output("btn-view-2d-real",  "style"),
+    Output("btn-view-3d-real",  "style"),
+    Input("btn-view-2d-real",   "n_clicks"),
+    Input("btn-view-3d-real",   "n_clicks"),
+    prevent_initial_call=True,
+)
+def toggle_view_mode_real(n2d, n3d):
+    btn = dash.callback_context.triggered[0]["prop_id"].split(".")[0]
+    base2d = {"padding": "6px 18px", "fontSize": 14, "fontWeight": "bold",
+               "cursor": "pointer", "border": "none",
+               "borderRadius": "4px 0 0 4px"}
+    base3d = {"padding": "6px 18px", "fontSize": 14, "fontWeight": "bold",
+               "cursor": "pointer", "border": "none",
+               "borderRadius": "0 4px 4px 0"}
+    if btn == "btn-view-3d-real":
+        return ("3d",
+                {**base2d, "background": "#bdc3c7", "color": "#2c3e50"},
+                {**base3d, "background": "#2980b9", "color": "white"})
+    return ("2d",
+            {**base2d, "background": "#2980b9", "color": "white"},
+            {**base3d, "background": "#bdc3c7", "color": "#2c3e50"})
+
+
+@callback(
     Output("map-graph-real",       "figure"),
     Output("time-label-real",      "children"),
     Output("state-summary-real",   "children"),
@@ -2432,7 +2460,7 @@ def slider_moved_real(slider_val, scenario):
     Output("multihop-result-real", "children"),
     Input("frame-store-real",      "data"),
     Input("scenario-dd-real",      "value"),
-    Input("view-mode-real",        "value"),
+    Input("view-mode-real",        "data"),
     State("prev-relay-store-real", "data"),
     State("bad-streak-store-real", "data"),
 )
