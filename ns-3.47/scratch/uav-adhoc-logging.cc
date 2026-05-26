@@ -43,10 +43,15 @@ int    g_latCount = 0;                                   // 응답 횟수
 // (src_id, dst_id) → 경로 손실 기반 RSSI (dBm)
 std::map<std::pair<uint32_t, uint32_t>, double> g_linkRssi;
 
-// ── 전파 파라미터 (wifiPhy 설정과 동일) ──────────────────────────────────────
-constexpr double TX_POWER_DBM  = 16.0;
+// ── 전파 파라미터 (5km×5km 정찰 시나리오, UAV 가시선 자유공간 모델) ───────────
+// TX 20 dBm + PathExp 2.0 → RSSI at 820m ≈ -85 dBm (통신 가능 범위 ~820m)
+constexpr double TX_POWER_DBM  = 20.0;
 constexpr double REF_LOSS_DB   = 46.6777;
-constexpr double PATH_EXPONENT = 2.7;
+constexpr double PATH_EXPONENT = 2.0;
+
+// 열잡음 기저 (802.11g 20MHz 채널, 수신기 잡음 지수 8dB)
+// kTB = -174 dBm/Hz + 10*log10(20e6) = -101 dBm, +NF 8dB = -93 dBm
+constexpr double NOISE_FLOOR_DBM = -93.0;
 
 
 // ── 헬퍼 ─────────────────────────────────────────────────────────────────────
@@ -133,10 +138,19 @@ BuildJson(NodeContainer nodes, double t)
     bool first = true;
     for (auto& kv : g_linkRssi)
     {
+        double rssi = kv.second;
+        // SNR = RSSI - noise_floor (dB)
+        double snr  = rssi - NOISE_FLOOR_DBM;
+        // PLR 추정: SNR 기반 시그모이드 (SNR=10dB → PLR=0.5, SNR>20dB → ~0, SNR<0dB → ~1)
+        double plr  = 1.0 / (1.0 + std::exp((snr - 10.0) * 0.5));
+        plr = std::max(0.0, std::min(1.0, plr));
+
         if (!first) j << ",";
-        j << "{\"src\":" << kv.first.first
-          << ",\"dst\":" << kv.first.second
-          << ",\"rssi\":" << kv.second << "}";
+        j << "{\"src\":"  << kv.first.first
+          << ",\"dst\":"  << kv.first.second
+          << ",\"rssi\":" << rssi
+          << ",\"snr\":"  << snr
+          << ",\"plr\":"  << plr << "}";
         first = false;
     }
     j << "]}";
@@ -236,15 +250,17 @@ SendLinkState(NodeContainer nodes)
                 if (relayId >= 0)
                     std::cout << "[ML] → Relay: UAV" << relayId << std::endl;
 
-                // 위치 보정 적용
+                // 위치 보정 적용 (MobilityModel 베이스 — RandomWaypoint 호환)
                 int corrId = -1; double dx = 0, dy = 0;
                 if (ParseCorrection(resp, corrId, dx, dy) &&
                     corrId >= 0 && corrId < (int)nodes.GetN())
                 {
-                    auto mob = nodes.Get(corrId)
-                                   ->GetObject<ConstantVelocityMobilityModel>();
+                    auto mob = nodes.Get(corrId)->GetObject<MobilityModel>();
                     auto pos = mob->GetPosition();
-                    mob->SetPosition(Vector(pos.x + dx, pos.y + dy, pos.z));
+                    // 영역 경계(5km) 클리핑
+                    double nx = std::max(0.0, std::min(5000.0, pos.x + dx));
+                    double ny = std::max(0.0, std::min(5000.0, pos.y + dy));
+                    mob->SetPosition(Vector(nx, ny, pos.z));
                     std::cout << "[ML] → UAV" << corrId
                               << " 위치 보정 (" << dx << ", " << dy << ")"
                               << std::endl;
@@ -354,34 +370,39 @@ PingRtt(std::string context, uint16_t seqNo, Time rtt)
 int
 main(int argc, char* argv[])
 {
+    // ── 5km×5km 정찰 시나리오 기본값 ─────────────────────────────────────────
     uint32_t    numUavs      = 5;
-    double      spacing      = 25.0;
-    double      altitude     = 30.0;
-    double      speed        = 1.5;
-    double      simTime      = 16.0;
-    uint32_t    pingCount    = 10;
+    double      area         = 5000.0;   // 정찰 영역 한 변 길이 (m)
+    double      altitude     = 80.0;    // 정찰 고도 (m)
+    double      speed        = 20.0;    // 정찰 속도 (m/s)
+    double      pause        = 3.0;     // 웨이포인트 도착 후 정지 시간 (s)
+    double      simTime      = 360.0;   // 시뮬레이션 시간 (s) — 6분 정찰
+    uint32_t    pingCount    = 100;
     double      pingInterval = 1.0;
     bool        enablePcap   = false;
-    bool        isolate      = false;   // UAV4를 군집에서 격리 (DQN 보정 시연용)
     std::string mlHost       = "127.0.0.1";
     uint16_t    mlPort       = 9000;
 
     CommandLine cmd(__FILE__);
-    cmd.AddValue("numUavs",      "Number of UAV nodes",                     numUavs);
-    cmd.AddValue("spacing",      "Initial x-axis spacing (m)",              spacing);
-    cmd.AddValue("altitude",     "Initial UAV altitude (m)",                altitude);
-    cmd.AddValue("speed",        "Forward speed (m/s)",                     speed);
+    cmd.AddValue("numUavs",      "Number of UAV nodes",                    numUavs);
+    cmd.AddValue("area",         "Patrol area side length (m)",             area);
+    cmd.AddValue("altitude",     "Patrol altitude (m)",                     altitude);
+    cmd.AddValue("speed",        "Waypoint cruise speed (m/s)",             speed);
+    cmd.AddValue("pause",        "Pause time at each waypoint (s)",         pause);
     cmd.AddValue("simTime",      "Simulation time (s)",                     simTime);
     cmd.AddValue("pingCount",    "Number of ping packets",                  pingCount);
     cmd.AddValue("pingInterval", "Ping interval (s)",                       pingInterval);
     cmd.AddValue("enablePcap",   "Enable PCAP trace",                       enablePcap);
-    cmd.AddValue("isolate",      "Put last UAV far away to trigger DQN",   isolate);
     cmd.AddValue("mlHost",       "ML server IP (default 127.0.0.1)",        mlHost);
     cmd.AddValue("mlPort",       "ML server port (default 9000)",           mlPort);
     cmd.Parse(argc, argv);
 
     if (numUavs < 2)
         NS_ABORT_MSG("numUavs must be at least 2");
+
+    std::cout << "[시나리오] 5km×5km 정찰  UAV=" << numUavs
+              << "  speed=" << speed << "m/s  alt=" << altitude
+              << "m  simTime=" << simTime << "s\n";
 
     GlobalValue::Bind("ChecksumEnabled", BooleanValue(true));
 
@@ -403,8 +424,9 @@ main(int argc, char* argv[])
 
     WifiHelper wifi;
     wifi.SetStandard(WIFI_STANDARD_80211g);
+    // 6Mbps: 수신 감도 ~-82dBm → 유효 범위 ~820m (24Mbps는 ~-74dBm, ~200m로 단축됨)
     wifi.SetRemoteStationManager("ns3::ConstantRateWifiManager",
-                                 "DataMode",    StringValue("ErpOfdmRate24Mbps"),
+                                 "DataMode",    StringValue("ErpOfdmRate6Mbps"),
                                  "ControlMode", StringValue("ErpOfdmRate6Mbps"));
 
     YansWifiChannelHelper wifiChannel;
@@ -425,37 +447,42 @@ main(int argc, char* argv[])
 
     NetDeviceContainer devices = wifi.Install(wifiPhy, wifiMac, nodes);
 
-    // ── 이동성 설정 ───────────────────────────────────────────────────────────
+    // ── 이동성 설정: 5km×5km Random Waypoint 정찰 ───────────────────────────
+    // 초기 위치: 5개 UAV를 영역 내 분산 배치 (삼성역 5구역 거점)
     MobilityHelper mobility;
-    auto positions = CreateObject<ListPositionAllocator>();
-    for (uint32_t i = 0; i < numUavs; ++i)
-    {
-        if (isolate && i == numUavs - 1)
-            // 마지막 UAV를 군집과 200m 떨어진 곳에 배치 (격리 시나리오)
-            positions->Add(Vector((numUavs - 2) * spacing + 200.0, 0.0, altitude));
-        else
-            positions->Add(Vector(i * spacing, 0.0, altitude));
-    }
-    mobility.SetPositionAllocator(positions);
-    mobility.SetMobilityModel("ns3::ConstantVelocityMobilityModel");
+    auto initPos = CreateObject<ListPositionAllocator>();
+    const double cx = area / 2.0;
+    const double r  = 600.0;   // 초기 배치 반경 600m — 통신 범위(~820m) 내 클러스터
+    // UAV0: 중앙  UAV1-4: 동/서/북/남 600m 거점 → OLSR 초기 수렴 보장
+    initPos->Add(Vector(cx,     cx,     altitude));
+    initPos->Add(Vector(cx + r, cx,     altitude));
+    initPos->Add(Vector(cx - r, cx,     altitude));
+    initPos->Add(Vector(cx,     cx + r, altitude));
+    initPos->Add(Vector(cx,     cx - r, altitude));
+    for (uint32_t i = 5; i < numUavs; ++i)
+        initPos->Add(Vector(area * 0.1 + (i % 3) * area * 0.4,
+                            area * 0.1 + (i / 3) * area * 0.4, altitude));
+    mobility.SetPositionAllocator(initPos);
+
+    // 웨이포인트 할당기: 영역 전체를 랜덤 순찰 (z=고도 고정으로 3D 강하 방지)
+    auto wpAlloc = CreateObject<RandomBoxPositionAllocator>();
+    std::ostringstream xStr, yStr, zStr;
+    xStr << "ns3::UniformRandomVariable[Min=0|Max=" << area << "]";
+    yStr << "ns3::UniformRandomVariable[Min=0|Max=" << area << "]";
+    zStr << "ns3::ConstantRandomVariable[Constant=" << altitude << "]";
+    wpAlloc->SetAttribute("X", StringValue(xStr.str()));
+    wpAlloc->SetAttribute("Y", StringValue(yStr.str()));
+    wpAlloc->SetAttribute("Z", StringValue(zStr.str()));
+
+    std::ostringstream speedStr, pauseStr;
+    speedStr << "ns3::ConstantRandomVariable[Constant=" << speed << "]";
+    pauseStr << "ns3::ConstantRandomVariable[Constant=" << pause << "]";
+
+    mobility.SetMobilityModel("ns3::RandomWaypointMobilityModel",
+                              "Speed",             StringValue(speedStr.str()),
+                              "Pause",             StringValue(pauseStr.str()),
+                              "PositionAllocator", PointerValue(wpAlloc));
     mobility.Install(nodes);
-
-    for (uint32_t i = 0; i < numUavs; ++i)
-    {
-        auto model = nodes.Get(i)->GetObject<ConstantVelocityMobilityModel>();
-        const double lateral = (i % 2 == 0) ? 0.4 : -0.4;
-        if (isolate && i == numUavs - 1)
-            // 격리 UAV는 정지 — DQN이 매초 보정벡터를 적용해 이동시킴
-            model->SetVelocity(Vector(0.0, 0.0, 0.0));
-        else
-            model->SetVelocity(Vector(speed, lateral, 0.0));
-    }
-
-    if (isolate)
-        std::cout << "[시나리오] 격리 모드: UAV" << numUavs - 1
-                  << " 초기 위치 = ("
-                  << (numUavs - 2) * spacing + 200.0 << ", 0, " << altitude
-                  << ") — DQN 위치 보정 시연\n";
 
     // ── 라우팅 & IP ───────────────────────────────────────────────────────────
     // HelloInterval 1s / TcInterval 2s → OLSR 수렴 ~3s (기본 6s 대비 2배 빠름)
@@ -476,12 +503,12 @@ main(int argc, char* argv[])
     Ipv4InterfaceContainer interfaces = ipv4.Assign(devices);
 
     // ── Ping 앱 ───────────────────────────────────────────────────────────────
-    // OLSR 수렴 대기 후 ping 시작 (4s) — 수렴 전 패킷 손실 방지
-    const double pingStart = 4.0;
+    // OLSR 수렴 대기: 5km 광역 시나리오는 멀티홉 수렴에 10s 확보
+    const double pingStart = 10.0;
     PingHelper ping(interfaces.GetAddress(numUavs - 1));
     ping.SetAttribute("Count",       UintegerValue(pingCount));
     ping.SetAttribute("Interval",    TimeValue(Seconds(pingInterval)));
-    ping.SetAttribute("VerboseMode", EnumValue(Ping::VerboseMode::SILENT));
+    ping.SetAttribute("VerboseMode", EnumValue<Ping::VerboseMode>(Ping::VerboseMode::SILENT));
     ApplicationContainer pingApp = ping.Install(nodes.Get(0));
     pingApp.Start(Seconds(pingStart));
     pingApp.Stop(Seconds(simTime - 0.5));

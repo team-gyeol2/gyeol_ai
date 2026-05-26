@@ -3,19 +3,19 @@
   "max_pairs": 10,
   "results": {
     "PPO (RL)": {
-      "avg_connected_pairs": 7.006,
-      "avg_switches_per_ep": 0.32,
-      "avg_reward": 6.992
+      "avg_connected_pairs": 0.514,
+      "avg_switches_per_ep": 0.62,
+      "avg_reward": 0.501
     },
     "Heuristic": {
-      "avg_connected_pairs": 6.459,
-      "avg_switches_per_ep": 3.66,
-      "avg_reward": 6.397
+      "avg_connected_pairs": 0.524,
+      "avg_switches_per_ep": 2.58,
+      "avg_reward": 0.481
     },
     "Rule-based": {
-      "avg_connected_pairs": 7.036,
-      "avg_switches_per_ep": 0.8,
-      "avg_reward": 7.023
+      "avg_connected_pairs": 0.537,
+      "avg_switches_per_ep": 0.81,
+      "avg_reward": 0.523
     }
   }
 }

@@ -22,16 +22,18 @@ from stable_baselines3.common.env_util import make_vec_env
 
 # ── 상수 ─────────────────────────────────────────────────────────────────────
 N_UAVS      = 5
-COMM_RANGE  = 160.0        # m
-RSSI_THRESH = -90.0        # dBm (DQN 학습 환경과 동일)
-TX_POWER    = -5.0         # dBm — 실효 통신 거리 ~175m @2.4GHz
+COMM_RANGE  = 800.0        # m — 도심 UAV 현실 통신거리
+RSSI_THRESH = -90.0        # dBm
+TX_POWER    = -5.0         # dBm
 FREQ_MHZ    = 2400.0
+NOISE_FLOOR = -93.0        # dBm — 802.11g 20MHz, NF 8dB 기준 열잡음
 MAX_STEPS   = 30           # 에피소드 최대 스텝
 N_LINKS     = N_UAVS * (N_UAVS - 1) // 2   # 10
-STATE_DIM   = N_LINKS + N_UAVS              # 15
+# State = RSSI×N_LINKS + SNR×N_LINKS + PLR×N_LINKS + relay_onehot×N_UAVS
+STATE_DIM   = N_LINKS * 3 + N_UAVS         # 35
 
-AREA_SIZE   = 250.0        # 시뮬레이션 공간 (m) — 일부 쌍이 범위 밖
-SPEED       = 5.0          # UAV 이동 속도 (m/step)
+AREA_SIZE   = 5000.0       # 삼성역 5km×5km 실제 정찰 공간
+SPEED       = 50.0         # UAV 이동 속도 (m/step)
 
 REWARD_CONN    =  1.0      # 연결 쌍당 보너스
 REWARD_SWITCH  = -0.5      # 릴레이 전환 패널티
@@ -47,6 +49,16 @@ def compute_rssi(ax, ay, bx, by) -> float:
     d = math.hypot(bx - ax, by - ay) or 0.01
     fspl = 20 * math.log10(d) + 20 * math.log10(FREQ_MHZ) - 27.55
     return TX_POWER - fspl
+
+
+def compute_snr(rssi: float) -> float:
+    """SNR (dB) = RSSI - 열잡음 기저."""
+    return rssi - NOISE_FLOOR
+
+
+def compute_plr(snr_db: float) -> float:
+    """SNR 기반 PLR 추정 (시그모이드, SNR=10dB → PLR=0.5)."""
+    return 1.0 / (1.0 + math.exp((snr_db - 10.0) * 0.5))
 
 
 def is_connected(ax, ay, bx, by) -> bool:
@@ -98,30 +110,48 @@ class RelayEnv(gym.Env):
 
     # ── 내부 헬퍼 ─────────────────────────────────────────────────────────────
     def _random_positions(self):
-        """UAV 위치를 랜덤 배치 (일부 쌍이 직접 통신 불가하도록)."""
-        while True:
-            pos = np.random.uniform(0, AREA_SIZE, (N_UAVS, 2))
-            # 적어도 한 쌍이 직접 연결 불가해야 의미 있는 시나리오
-            has_disconnected = any(
-                not is_connected(pos[i][0], pos[i][1], pos[j][0], pos[j][1])
-                for i in range(N_UAVS) for j in range(i + 1, N_UAVS)
+        """UAV 위치 생성: 릴레이 학습에 의미 있는 부분-연결 시나리오 보장.
+        통신 범위 3배 크기의 서브 영역 내에 배치해 1쌍 이상 연결, 1쌍 이상 단절되도록 함."""
+        eff = COMM_RANGE * 3.0   # ~2400m — 일부 연결·일부 단절 발생 가능 범위
+        margin = min(eff, AREA_SIZE)
+        max_offset = max(AREA_SIZE - margin, 0.0)
+        for _ in range(200):
+            offset = np.random.uniform(0, max_offset, 2) if max_offset > 0 else np.zeros(2)
+            pos = offset + np.random.uniform(0, margin, (N_UAVS, 2))
+            pos = np.clip(pos, 0, AREA_SIZE)
+            connected = sum(
+                1 for i in range(N_UAVS) for j in range(i + 1, N_UAVS)
+                if is_connected(pos[i][0], pos[i][1], pos[j][0], pos[j][1])
             )
-            if has_disconnected:
+            if 1 <= connected <= N_LINKS - 1:   # 부분 연결만 허용
                 return pos
+        # 수렴 실패 시 폴백: 중심 주변 COMM_RANGE 이내 배치
+        center = np.array([AREA_SIZE / 2, AREA_SIZE / 2])
+        return np.clip(center + np.random.uniform(-COMM_RANGE, COMM_RANGE, (N_UAVS, 2)),
+                       0, AREA_SIZE)
 
     def _observe(self) -> np.ndarray:
-        rssi_vec = []
+        rssi_vec, snr_vec, plr_vec = [], [], []
         for i, j in link_pairs():
             rssi = compute_rssi(
                 self.pos[i][0], self.pos[i][1],
                 self.pos[j][0], self.pos[j][1])
-            # [-120, -20] → [-1, 1] 정규화
+            snr  = compute_snr(rssi)
+            plr  = compute_plr(snr)
+            # RSSI: [-120, -20] → [-1, 1]
             rssi_vec.append(np.clip((rssi - RSSI_THRESH) / 50.0, -1.0, 1.0))
+            # SNR:  [-40, 60] dB → [-1, 1]  (중심 10dB)
+            snr_vec.append(np.clip((snr - 10.0) / 50.0, -1.0, 1.0))
+            # PLR: [0, 1] → 그대로 사용
+            plr_vec.append(float(plr))
         relay_oh = np.zeros(N_UAVS, dtype=np.float32)
         relay_oh[self.relay] = 1.0
-        return np.array(rssi_vec, dtype=np.float32)._concatenate(relay_oh) \
-               if False else np.concatenate([
-                   np.array(rssi_vec, dtype=np.float32), relay_oh])
+        return np.concatenate([
+            np.array(rssi_vec, dtype=np.float32),
+            np.array(snr_vec,  dtype=np.float32),
+            np.array(plr_vec,  dtype=np.float32),
+            relay_oh,
+        ])
 
     def _move_uavs(self):
         """UAV를 소량 랜덤 이동 (동적 환경 시뮬레이션)."""

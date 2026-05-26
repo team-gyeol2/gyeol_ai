@@ -686,14 +686,19 @@ def _make_ppo_comparison():
         line=dict(color="#8e44ad", width=2, dash="dot"),
         yaxis="y2",
     ))
+    max_conn = max(conn_pct) if conn_pct else 1.0
     fig.update_layout(
-        margin=dict(l=50, r=60, t=30, b=40),
-        yaxis=dict(title="평균 연결률 (%)", range=[0, 100], gridcolor="#eee"),
+        margin=dict(l=50, r=60, t=60, b=40),
+        title=dict(
+            text=f"5km×5km 삼성역 정찰 시나리오 (COMM_RANGE=800m, 에피소드 1000회)",
+            font=dict(size=12, color="#555"), x=0.5,
+        ),
+        yaxis=dict(title="평균 연결률 (%)", range=[0, max_conn * 1.6], gridcolor="#eee"),
         yaxis2=dict(title="릴레이 전환 (회/에피소드)", overlaying="y", side="right",
                     range=[0, max(switches) * 1.5 or 1], gridcolor=None),
         xaxis=dict(title="전략"),
         plot_bgcolor="white", paper_bgcolor="white",
-        legend=dict(orientation="h", y=1.12),
+        legend=dict(orientation="h", y=1.18),
         barmode="group",
     )
     return fig
@@ -1582,6 +1587,8 @@ app.layout = html.Div([
     dcc.Store(id="bad-streak-store-real", data=0),
     dcc.Interval(id="interval-real", interval=600, n_intervals=0, disabled=True),
     dcc.Interval(id="ns3-interval", interval=2000, n_intervals=0),
+    dcc.Interval(id="ns3-anim-interval", interval=800, n_intervals=0, disabled=True),
+    dcc.Store(id="ns3-playing", data=False),
 
     # ── 헤더 ─────────────────────────────────────────────────────────────────
     html.Div([
@@ -2147,13 +2154,80 @@ app.layout = html.Div([
                 ], style={**CARD, "flex": 1}),
             ], style={"display": "flex", "marginBottom": 16}),
 
-            # 행 2: 위치 보정 이력
+            # 행 2: 재연결 결과 카드
+            html.Div(id="ns3-reconnect-card", style={"marginBottom": 16}),
+
+            # 행 3: 위치 보정 이력
             html.Div([
                 html.H4("DQN 위치 보정 이력",
                         style={"margin": "0 0 8px", "fontSize": 14, "color": "#2c3e50"}),
                 dcc.Graph(id="ns3-correction-graph",
                           config={"displayModeBar": False},
                           style={"height": 240}),
+            ], style={**CARD, "marginBottom": 16}),
+
+            # 행 4: UAV 위치 시각화 (NS-3 시뮬레이션 현황)
+            html.Div([
+                # 제목 + 재생 컨트롤 행
+                html.Div([
+                    html.Div([
+                        html.H4("NS-3 시뮬레이션 UAV 위치 현황",
+                                style={"margin": "0 0 2px", "fontSize": 14, "color": "#2c3e50"}),
+                        html.P("▶ Play로 자동 재생하거나 슬라이더를 직접 조절하세요.",
+                               style={"margin": 0, "fontSize": 12, "color": "#7f8c8d"}),
+                    ], style={"flex": 1}),
+                    # 재생 버튼 그룹
+                    html.Div([
+                        html.Button("▶ Play",  id="ns3-play-btn",  n_clicks=0,
+                                    style={"padding": "6px 14px", "marginRight": 6,
+                                           "background": "#27ae60", "color": "white",
+                                           "border": "none", "borderRadius": 6,
+                                           "cursor": "pointer", "fontSize": 13, "fontWeight": "bold"}),
+                        html.Button("⏸ Pause", id="ns3-pause-btn", n_clicks=0,
+                                    style={"padding": "6px 14px", "marginRight": 12,
+                                           "background": "#e67e22", "color": "white",
+                                           "border": "none", "borderRadius": 6,
+                                           "cursor": "pointer", "fontSize": 13}),
+                        html.Span("속도:", style={"fontSize": 12, "color": "#555",
+                                                  "marginRight": 6, "alignSelf": "center"}),
+                        html.Div(
+                            dcc.Slider(id="ns3-speed-slider", min=1, max=8, step=1, value=4,
+                                       marks={1: "×1", 2: "×2", 4: "×4", 6: "×6", 8: "×8"},
+                                       tooltip={"always_visible": False}),
+                            style={"width": 140}),
+                    ], style={"display": "flex", "alignItems": "center"}),
+                ], style={"display": "flex", "alignItems": "center",
+                          "marginBottom": 12}),
+                # 시간 슬라이더
+                html.Div([
+                    html.Span("시뮬레이션 시각 (s):",
+                              style={"fontSize": 12, "color": "#555", "marginRight": 8,
+                                     "whiteSpace": "nowrap"}),
+                    dcc.Slider(
+                        id="ns3-pos-slider",
+                        min=0, max=15, step=1, value=0,
+                        marks={i: f"{i+0.5:.1f}s" for i in range(16)},
+                        tooltip={"always_visible": False, "placement": "bottom"},
+                    ),
+                ], style={"display": "flex", "alignItems": "center", "marginBottom": 14}),
+                dcc.Graph(id="ns3-pos-graph",
+                          config={"displayModeBar": True,
+                                  "modeBarButtonsToRemove": ["lasso2d", "select2d"]},
+                          style={"height": 420}),
+                # 범례 설명
+                html.Div([
+                    html.Span("★ 릴레이 UAV", style={"color": "#e67e22",
+                               "fontWeight": "bold", "marginRight": 20, "fontSize": 12}),
+                    html.Span("◆ 격리 UAV", style={"color": "#e74c3c",
+                               "fontWeight": "bold", "marginRight": 20, "fontSize": 12}),
+                    html.Span("● 일반 UAV", style={"color": "#2980b9",
+                               "fontWeight": "bold", "marginRight": 20, "fontSize": 12}),
+                    html.Span("━ 연결됨", style={"color": "#27ae60",
+                               "marginRight": 20, "fontSize": 12}),
+                    html.Span("╌ 약한연결", style={"color": "#f39c12",
+                               "marginRight": 20, "fontSize": 12}),
+                    html.Span("→ DQN 보정", style={"color": "#8e44ad", "fontSize": 12}),
+                ], style={"textAlign": "center", "marginTop": 6}),
             ], style={**CARD, "marginBottom": 0}),
 
         ], style={"padding": "16px 24px", "background": "#f5f6fa",
@@ -2679,7 +2753,199 @@ if HAS_3D:
 
 
 # ── NS-3 실시간 연동 콜백 ─────────────────────────────────────────────────────
-_NS3_ML_CSV = ROOT / "ns-3.47" / "uav-ml.csv"
+_NS3_ML_CSV  = ROOT / "ns-3.47" / "uav-ml.csv"
+_NS3_POS_CSV = ROOT / "ns-3.47" / "uav-pos.csv"
+
+# NS-3 물리 파라미터 (uav-adhoc-logging.cc 와 동일 — 5km 정찰 시나리오)
+_NS3_TX_POWER    = 20.0    # dBm (UAV 가시선 자유공간)
+_NS3_REF_LOSS    = 46.6777 # dB
+_NS3_PATH_EXP    = 2.0     # 자유공간 경로 지수
+_NS3_RSSI_THRESH = -85.0   # dBm
+_NS3_COMM_RANGE  = 820.0   # m   (~TX 20dBm + PathExp 2.0 기준)
+
+
+def _ns3_path_loss_rssi(ax, ay, bx, by) -> float:
+    """NS-3 LogDistance 모델 기반 RSSI 계산."""
+    d = math.hypot(bx - ax, by - ay) or 0.01
+    pl = _NS3_REF_LOSS + 10 * _NS3_PATH_EXP * math.log10(d)
+    return _NS3_TX_POWER - pl
+
+
+def _read_ns3_pos() -> dict[float, dict[int, tuple[float, float]]]:
+    """uav-pos.csv → {time_s: {uav_id: (x, y)}}"""
+    out: dict[float, dict[int, tuple[float, float]]] = {}
+    if not _NS3_POS_CSV.exists():
+        return out
+    try:
+        with open(_NS3_POS_CSV, encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                t   = float(row["time_s"])
+                uid = int(row["uav_id"])
+                x   = float(row["x"])
+                y   = float(row["y"])
+                out.setdefault(t, {})[uid] = (x, y)
+    except Exception:
+        pass
+    return out
+
+
+def _make_ns3_pos_figure(t_s: float,
+                          pos_data: dict[float, dict[int, tuple[float, float]]],
+                          ml_rows: list[dict]) -> go.Figure:
+    """NS-3 UAV 위치 + 링크 + 릴레이 + DQN 보정 시각화."""
+    # ── 가장 가까운 타임스텝 선택
+    if not pos_data:
+        return go.Figure().update_layout(
+            annotations=[dict(text="uav-pos.csv 없음 — NS-3 시뮬레이션을 먼저 실행하세요",
+                              showarrow=False, font=dict(size=13, color="#aaa"),
+                              xref="paper", yref="paper", x=0.5, y=0.5)])
+
+    times = sorted(pos_data.keys())
+    best_t = min(times, key=lambda t: abs(t - t_s))
+    pos = pos_data[best_t]        # {uav_id: (x, y)}
+    n_uavs = len(pos)
+
+    # ── 해당 시각의 ML 레코드 (릴레이 선택 + 보정)
+    relay_id  = None
+    corr_dx, corr_dy, corr_uid = 0.0, 0.0, None
+    for row in ml_rows:
+        if abs(row["t"] - best_t) < 0.6:
+            relay_id = row.get("relay_id")
+            corr = row.get("correction")
+            if corr and isinstance(corr, dict):
+                corr_uid = corr.get("uav_id")
+                corr_dx  = corr.get("dx", 0.0)
+                corr_dy  = corr.get("dy", 0.0)
+            break
+
+    uav_colors = {
+        "relay":     "#e67e22",   # 주황 — 릴레이 UAV
+        "isolated":  "#e74c3c",   # 빨강 — 격리 UAV
+        "normal":    "#2980b9",   # 파랑 — 일반 UAV
+        "connected": "#27ae60",   # 초록 링크
+        "weak":      "#f39c12",   # 노랑 링크 (약한 연결)
+        "disco":     "#e74c3c",   # 빨강 링크 (미연결)
+    }
+
+    fig = go.Figure()
+
+    # ── 1. 링크 (각 쌍의 연결 상태)
+    uav_ids = sorted(pos.keys())
+    for i in range(len(uav_ids)):
+        for j in range(i + 1, len(uav_ids)):
+            a, b = uav_ids[i], uav_ids[j]
+            ax, ay = pos[a]; bx, by = pos[b]
+            rssi = _ns3_path_loss_rssi(ax, ay, bx, by)
+            dist = math.hypot(bx - ax, by - ay)
+            if rssi >= _NS3_RSSI_THRESH:
+                link_color = uav_colors["connected"]
+                link_dash  = "solid"
+                link_width = 2.5
+                link_label = f"UAV{a}-UAV{b}<br>d={dist:.0f}m RSSI={rssi:.1f}dBm ✓"
+            elif dist <= _NS3_COMM_RANGE * 1.5:
+                link_color = uav_colors["weak"]
+                link_dash  = "dot"
+                link_width = 1.5
+                link_label = f"UAV{a}-UAV{b}<br>d={dist:.0f}m RSSI={rssi:.1f}dBm (약)"
+            else:
+                continue  # 너무 먼 링크는 생략
+            fig.add_trace(go.Scatter(
+                x=[ax, bx], y=[ay, by], mode="lines",
+                line=dict(color=link_color, width=link_width, dash=link_dash),
+                hoverinfo="text", hovertext=link_label,
+                showlegend=False,
+            ))
+
+    # ── 2. 통신 범위 원 (릴레이 UAV)
+    if relay_id is not None and relay_id in pos:
+        rx, ry = pos[relay_id]
+        theta = [i * 2 * math.pi / 60 for i in range(61)]
+        circle_x = [rx + _NS3_COMM_RANGE * math.cos(a) for a in theta]
+        circle_y = [ry + _NS3_COMM_RANGE * math.sin(a) for a in theta]
+        fig.add_trace(go.Scatter(
+            x=circle_x, y=circle_y, mode="lines",
+            line=dict(color="#e67e22", width=1, dash="dot"),
+            fill="toself", fillcolor="rgba(230,126,34,0.06)",
+            name=f"릴레이 UAV{relay_id} 통신범위", hoverinfo="skip",
+        ))
+
+    # ── 3. DQN 보정 화살표
+    if corr_uid is not None and corr_uid in pos and (abs(corr_dx) > 0.1 or abs(corr_dy) > 0.1):
+        sx, sy = pos[corr_uid]
+        ex, ey = sx + corr_dx, sy + corr_dy
+        fig.add_annotation(
+            x=ex, y=ey, ax=sx, ay=sy,
+            xref="x", yref="y", axref="x", ayref="y",
+            showarrow=True, arrowhead=3, arrowsize=1.5,
+            arrowwidth=3, arrowcolor="#8e44ad",
+            text=f"DQN 보정<br>Δ({corr_dx:+.0f}, {corr_dy:+.0f})m",
+            font=dict(size=11, color="#8e44ad"),
+            bgcolor="rgba(255,255,255,0.85)", bordercolor="#8e44ad", borderwidth=1,
+            xanchor="center",
+        )
+
+    # ── 4. UAV 마커
+    for uid in uav_ids:
+        x, y = pos[uid]
+        if uid == relay_id:
+            color  = uav_colors["relay"]
+            symbol = "star"
+            size   = 18
+            label  = f"UAV{uid} (릴레이)"
+        else:
+            # 격리 여부: 가장 가까운 다른 UAV와의 거리로 판정
+            others = [pos[o] for o in uav_ids if o != uid]
+            min_d  = min(math.hypot(ox - x, oy - y) for ox, oy in others) if others else 0
+            if min_d > _NS3_COMM_RANGE:
+                color  = uav_colors["isolated"]
+                symbol = "diamond"
+                size   = 15
+                label  = f"UAV{uid} (격리)"
+            else:
+                color  = uav_colors["normal"]
+                symbol = "circle"
+                size   = 14
+                label  = f"UAV{uid}"
+
+        rssi_info = ""
+        if relay_id is not None and relay_id in pos and uid != relay_id:
+            rx, ry = pos[relay_id]
+            rssi = _ns3_path_loss_rssi(x, y, rx, ry)
+            rssi_info = f"<br>릴레이까지 RSSI={rssi:.1f}dBm"
+
+        fig.add_trace(go.Scatter(
+            x=[x], y=[y], mode="markers+text",
+            marker=dict(color=color, size=size, symbol=symbol,
+                        line=dict(color="white", width=2)),
+            text=[f"UAV{uid}"],
+            textposition="top center",
+            textfont=dict(size=11, color=color),
+            name=label,
+            hovertext=f"{label}<br>위치: ({x:.1f}, {y:.1f})m{rssi_info}",
+            hoverinfo="text",
+        ))
+
+    # ── 5. 레이아웃 — 축은 5km×5km 전체 영역으로 고정 (재생 중 변동 없음)
+    relay_label = f"릴레이=UAV{relay_id}" if relay_id is not None else "릴레이 미선택"
+    fig.update_layout(
+        uirevision="ns3-patrol",   # 이 값이 일정하면 축 범위·줌이 유지됨
+        title=dict(
+            text=f"t = {best_t:.1f}s  |  {relay_label}  |  UAV {n_uavs}대 (802.11g Ad-hoc, OLSR)",
+            font=dict(size=13, color="#2c3e50"), x=0.5,
+        ),
+        xaxis=dict(title="X 위치 (m)", range=[-200, 5200],
+                   gridcolor="#eee", zeroline=False,
+                   fixedrange=False),
+        yaxis=dict(title="Y 위치 (m)", range=[-200, 5200],
+                   gridcolor="#eee", zeroline=False,
+                   scaleanchor="x", scaleratio=1,
+                   fixedrange=False),
+        plot_bgcolor="white", paper_bgcolor="white",
+        margin=dict(l=50, r=30, t=50, b=40),
+        legend=dict(orientation="h", y=-0.15, font=dict(size=11)),
+        hovermode="closest",
+    )
+    return fig
 
 
 def _read_ns3_log() -> list[dict]:
@@ -2712,11 +2978,12 @@ def _read_ns3_log() -> list[dict]:
 
 
 @callback(
-    Output("ns3-status-card",     "children"),
-    Output("ns3-relay-graph",     "figure"),
-    Output("ns3-latency-graph",   "figure"),
-    Output("ns3-correction-graph","figure"),
-    Input("ns3-interval",         "n_intervals"),
+    Output("ns3-status-card",      "children"),
+    Output("ns3-relay-graph",      "figure"),
+    Output("ns3-latency-graph",    "figure"),
+    Output("ns3-reconnect-card",   "children"),
+    Output("ns3-correction-graph", "figure"),
+    Input("ns3-interval",          "n_intervals"),
 )
 def update_ns3_tab(_):
     rows = _read_ns3_log()
@@ -2736,7 +3003,7 @@ def update_ns3_tab(_):
                               font=dict(size=14, color="#aaa"),
                               xref="paper", yref="paper", x=0.5, y=0.5)],
         )
-        return card, empty, empty, empty
+        return card, empty, empty, html.Div(), empty
 
     online = [r for r in rows if r["relay"] >= 0]
     corr_rows = []
@@ -2840,7 +3107,150 @@ def update_ns3_tab(_):
                               xref="paper", yref="paper", x=0.5, y=0.5)],
         )
 
-    return card, relay_fig, lat_fig, corr_fig
+    # ── 재연결 결과 카드 ───────────────────────────────────────────────────
+    reconnect_card = html.Div()
+    if corr_rows:
+        # UAV별 보정 발생 시간 수집
+        from collections import defaultdict
+        uav_corr_times: dict = defaultdict(list)
+        for r in corr_rows:
+            uav_corr_times[r["uav_id"]].append(r["t"])
+
+        cards = []
+        all_ts = [r["t"] for r in online]
+        last_t = max(all_ts) if all_ts else 0
+
+        for uid, times in uav_corr_times.items():
+            n_corr   = len(times)
+            first_t  = min(times)
+            last_corr_t = max(times)
+
+            # 마지막 보정 이후 온라인 레코드가 있으면서 보정이 없으면 재연결 성공
+            later_online = [r for r in online if r["t"] > last_corr_t]
+            later_corr   = [r for r in corr_rows
+                            if r["uav_id"] == uid and r["t"] > last_corr_t]
+            reconnected  = len(later_online) > 0 and len(later_corr) == 0
+            time_to_reconnect = round(last_corr_t - first_t + 1, 1)
+
+            if reconnected:
+                bg, icon, result_text = "#27ae60", "✅", "재연결 성공"
+                detail = (f"UAV{uid} → {n_corr}회 보정 ({time_to_reconnect}s) 후 "
+                          f"t={last_corr_t+1:.0f}s 재연결")
+            else:
+                bg, icon, result_text = "#e67e22", "🔄", "보정 중 (미완료)"
+                detail = (f"UAV{uid} → {n_corr}회 보정 적용됨 "
+                          f"(시뮬레이션 종료까지 연결 미회복)")
+
+            cards.append(html.Div([
+                html.Div([
+                    html.Span(icon, style={"fontSize": 20, "marginRight": 10}),
+                    html.Span(f"DQN 위치 보정 결과 — {result_text}",
+                              style={"fontWeight": "bold", "fontSize": 14}),
+                ], style={"marginBottom": 6}),
+                html.Div([
+                    html.Span(detail, style={"fontSize": 13}),
+                ]),
+                html.Div([
+                    html.Span(f"보정 횟수: {n_corr}회",
+                              style={"marginRight": 20, "fontSize": 12}),
+                    html.Span(f"첫 감지: t={first_t:.1f}s",
+                              style={"marginRight": 20, "fontSize": 12}),
+                    html.Span(f"평균 이동: 40m/회",
+                              style={"fontSize": 12}),
+                ], style={"marginTop": 8, "opacity": 0.85}),
+            ], style={
+                "background": bg, "color": "white",
+                "borderRadius": 8, "padding": "14px 20px",
+                "marginRight": 12, "flex": 1,
+                "boxShadow": "0 2px 8px rgba(0,0,0,.2)",
+            }))
+
+        reconnect_card = html.Div(cards, style={"display": "flex"})
+
+    return card, relay_fig, lat_fig, reconnect_card, corr_fig
+
+
+# ── NS-3 UAV 위치 시각화 콜백 ────────────────────────────────────────────────
+_ns3_pos_cache: dict = {}
+_ns3_pos_cache_ts: float = 0.0
+
+
+def _load_ns3_pos_data():
+    """캐시 갱신 후 (pos_data, ml_rows, times) 반환."""
+    global _ns3_pos_cache, _ns3_pos_cache_ts
+    mtime = _NS3_POS_CSV.stat().st_mtime if _NS3_POS_CSV.exists() else 0.0
+    if mtime != _ns3_pos_cache_ts:
+        _ns3_pos_cache    = _read_ns3_pos()
+        _ns3_pos_cache_ts = mtime
+    times = sorted(_ns3_pos_cache.keys()) if _ns3_pos_cache else []
+    return _ns3_pos_cache, _read_ns3_log(), times
+
+
+# ── Play/Pause → Interval 제어 ────────────────────────────────────────────────
+@callback(
+    Output("ns3-anim-interval", "disabled"),
+    Output("ns3-anim-interval", "interval"),
+    Input("ns3-play-btn",       "n_clicks"),
+    Input("ns3-pause-btn",      "n_clicks"),
+    Input("ns3-speed-slider",   "value"),
+    State("ns3-anim-interval",  "disabled"),
+    prevent_initial_call=True,
+)
+def toggle_ns3_play(play_n, pause_n, speed, is_disabled):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return True, 800
+    btn = ctx.triggered[0]["prop_id"].split(".")[0]
+    # 속도 슬라이더: ×1=800ms, ×2=500ms, ×3=320ms, ×4=200ms, ×5=120ms
+    interval_ms = max(60, int(600 / speed))
+    if btn == "ns3-play-btn":
+        return False, interval_ms
+    if btn == "ns3-pause-btn":
+        return True, interval_ms
+    return is_disabled, interval_ms
+
+
+# ── Interval → 슬라이더 자동 진행 ────────────────────────────────────────────
+@callback(
+    Output("ns3-pos-slider", "value", allow_duplicate=True),
+    Input("ns3-anim-interval", "n_intervals"),
+    State("ns3-pos-slider",    "value"),
+    State("ns3-pos-slider",    "max"),
+    prevent_initial_call=True,
+)
+def advance_ns3_slider(_n, cur_val, slider_max):
+    if slider_max is None or slider_max == 0:
+        return 0
+    nxt = (int(cur_val or 0) + 1) % (int(slider_max) + 1)
+    return nxt
+
+
+# ── 슬라이더 → 그래프 + 슬라이더 범위/눈금 ──────────────────────────────────
+@callback(
+    Output("ns3-pos-graph",  "figure"),
+    Output("ns3-pos-slider", "max"),
+    Output("ns3-pos-slider", "marks"),
+    Input("ns3-pos-slider",  "value"),
+    Input("ns3-interval",    "n_intervals"),
+)
+def update_ns3_pos(slider_val, _n):
+    pos_data, ml_rows, times = _load_ns3_pos_data()
+
+    n_steps    = len(times)
+    slider_max = max(n_steps - 1, 0)
+
+    idx = min(int(slider_val or 0), slider_max)
+    t_s = times[idx] if times else 0.5
+
+    marks = {}
+    if times:
+        step = max(1, n_steps // 8)
+        for i in range(0, n_steps, step):
+            marks[i] = f"{times[i]:.1f}s"
+        marks[n_steps - 1] = f"{times[-1]:.1f}s"
+
+    fig = _make_ns3_pos_figure(t_s, pos_data, ml_rows)
+    return fig, slider_max, marks
 
 
 if __name__ == "__main__":
