@@ -1,0 +1,25 @@
+{
+  "center": {
+    "latitude": 37.0576,
+    "longitude": 127.0605,
+    "name": "삼성역"
+  },
+  "map_size_km": 5,
+  "bounding_box": {
+    "north": 37.08012252252252,
+    "south": 37.03507747747748,
+    "east": 127.08872264803263,
+    "west": 127.03227735196738
+  },
+  "grid": {
+    "size": 50,
+    "unit": "cell",
+    "resolution_m": 100
+  },
+  "data_source": "OpenStreetMap (Overpass API)",
+  "elements": [
+    "buildings",
+    "highways"
+  ],
+  "created_at": "2026-05-17T04:21:42"
+}

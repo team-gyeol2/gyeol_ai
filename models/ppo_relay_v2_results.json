@@ -1,0 +1,20 @@
+{
+  "RecurrentPPO v2": {
+    "marginal_pairs": 1.428,
+    "switches": 9.6,
+    "min_battery": 0.131,
+    "reward": 1.105
+  },
+  "Heuristic(greedy)": {
+    "marginal_pairs": 1.261,
+    "switches": 6.91,
+    "min_battery": 0.042,
+    "reward": 0.892
+  },
+  "Rule-based(center)": {
+    "marginal_pairs": 1.099,
+    "switches": 7.59,
+    "min_battery": 0.037,
+    "reward": 0.727
+  }
+}
